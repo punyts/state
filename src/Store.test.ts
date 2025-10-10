@@ -1,4 +1,4 @@
-import { createStore, getRawType } from './Store';
+import { createStore, getRawType } from './Store.js';
 
 describe('Store', () => {
     let store: ReturnType<typeof createStore>;

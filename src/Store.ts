@@ -1,9 +1,6 @@
-import { ListenerFn, report } from '../logging/Reporter';
-import { deepDereference } from '../utils/Dereference';
-import { DifferenceCollectionType, getDifferences } from '../utils/Difference';
-import { getType, isGenericObject } from '../utils/RuntimeTypeCheck';
-import { applyToState, applyToStateIf, replaceState } from './ApplyState';
-import { createEventManager, EventManager, EventListenerFn } from './EventManager';
+import { report, getType, isGenericObject } from '@punyts/core';
+import { applyToState, applyToStateIf, replaceState } from './ApplyState.js';
+import { createEventManager, EventManager, EventListenerFn } from './EventManager.js';
 
 const PATT_STATE_PATH = /^(?:(?:[0-z$\-_]+)(?:[.](?!$)|$))+$/;
 const PATT_LEADING_DOTS = /^([.]+)(.*)/;
@@ -35,7 +32,6 @@ export type ProxyObject = {
     readonly __apply: (value: any) => any;
     readonly __applyIf: (value: any) => any;
     readonly __replace: (value: any) => any;
-    readonly __getDifferences: (oldValue: any) => DifferenceCollectionType;
 };
 
 export type DeepProxyObject<T = any> = (
@@ -112,7 +108,7 @@ export const resolveRelativePath = (basePath: string, paths: string | string[]) 
 
 export const createStore = <R>(initialState?: R): Store<R> => {
     let state: R = initialState
-        ? deepDereference(initialState)
+        ? JSON.parse(JSON.stringify(initialState))
         : {} as R;
     const eventManager: EventManager = createEventManager();
 
@@ -255,7 +251,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         ///END LOGGING
 
         //get a copy of the current value to use as the oldValue when emitting the event
-        const oldValue = deepDereference(currentValue);
+        const oldValue = JSON.parse(JSON.stringify(currentValue));
         const hasProp = propName
             ? base.hasOwnProperty(propName)
             : true;
@@ -339,7 +335,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         if (!stateRef.found)
             return false;
 
-        const oldValue = deepDereference(stateRef.parent[stateRef.index as string]);
+        const oldValue = JSON.parse(JSON.stringify(stateRef.parent[stateRef.index as string]));
 
         //if the parent is an array then we need to splice
         if (Array.isArray(stateRef.parent)) {
@@ -456,11 +452,6 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 return set<T>(fullPath, value);
             }
         }
-        if (prop === "__getDifferences") {
-            return (otherValue: any): DifferenceCollectionType => {
-                return getDifferences(value, otherValue, basePath);
-            }
-        }
 
         return undefined;
     }
@@ -573,7 +564,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return false;
 
         //copy the current value for the emit
-        const oldValue = deepDereference(getStateByPath(path));
+        const oldValue = JSON.parse(JSON.stringify(getStateByPath(path)));
 
         //Unwrap the value if it's a proxy
         const rawValue = getRawValue(source);

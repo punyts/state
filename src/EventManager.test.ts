@@ -1,4 +1,4 @@
-import { createEventManager, EventListenerFn } from './EventManager';
+import { createEventManager, EventListenerFn } from './EventManager.js';
 
 describe('EventManager', () => {
     let eventManager: ReturnType<typeof createEventManager>;

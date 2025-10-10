@@ -1,4 +1,4 @@
-import { getRawType, ProxyObject } from "./Store";
+import { getRawType, ProxyObject } from "./Store.js";
 
 /**
  * Recursively applys the properties from source to target ONLY IF the target does not have the property

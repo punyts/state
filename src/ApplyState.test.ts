@@ -1,4 +1,4 @@
-import { applyToState, applyToStateIf } from './ApplyState';
+import { applyToState, applyToStateIf } from './ApplyState.js';
 
 describe('ApplyState Utility Functions', () => {
     describe('applyToState', () => {

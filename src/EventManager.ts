@@ -1,4 +1,4 @@
-import { report } from "../logging/Reporter";
+import { report } from "@punyts/core";
 
 export type EventListenerFn = (path: string, value: any, oldValue: any, action: string) => void;
 
