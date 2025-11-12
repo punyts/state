@@ -1,3 +1,4 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStore, getRawType } from './Store.js';
 
 describe('Store', () => {
@@ -98,7 +99,7 @@ describe('Store', () => {
 
     describe('event listeners', () => {
         it('should trigger listeners on property change', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             store.on('$.user.name', listener);
 
             store.set('$.user.name', 'Jane Doe');
@@ -106,7 +107,7 @@ describe('Store', () => {
         });
 
         it('should trigger listeners for wildcard paths', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             store.on('$.user.address.$all', listener);
 
             store.set('$.user.address.city', 'Los Angeles');
@@ -114,7 +115,7 @@ describe('Store', () => {
         });
 
         it('should remove listeners', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             store.on('$.user.name', listener);
             store.off('$.user.name', listener);
 
@@ -125,7 +126,7 @@ describe('Store', () => {
 
     describe('event listeners proxy', () => {
         it('should trigger listeners on property change', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             const user = store.get("$.user");
             user.__on(".name", listener);
             user.name = 'Jane Doe';
@@ -133,7 +134,7 @@ describe('Store', () => {
         });
 
         it('should trigger listeners for wildcard paths', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             const user = store.get("$.user");
             user.__on(".address.$all", listener);
             user.address.city = 'Los Angeles';
@@ -141,7 +142,7 @@ describe('Store', () => {
         });
 
         it('should add listeners without a path fragment', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             const user = store.get("$.user");
             user.__on(".", listener);
             store.set("$.user", {});
@@ -155,7 +156,7 @@ describe('Store', () => {
         });
 
         it('should remove listeners', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             const user = store.get("$.user");
             user.__on('.name', listener);
             user.__off('.name', listener);
@@ -206,7 +207,7 @@ describe('Store', () => {
         });
 
         it('should trigger events when setting properties through proxies', () => {
-            const listener = jest.fn();
+            const listener = vi.fn();
             store.on('$.user.name', listener);
 
             const user = store.get('$.user');

@@ -1,3 +1,4 @@
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createEventManager, EventListenerFn } from './EventManager.js';
 
 describe('EventManager', () => {
@@ -8,7 +9,7 @@ describe('EventManager', () => {
     });
 
     test('should add a listener for a specific path', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
         eventManager.addListener('test.path', listener);
 
         // Emit the event to verify the listener is called
@@ -17,7 +18,7 @@ describe('EventManager', () => {
     });
 
     test('should add a listener for multiple paths', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
         eventManager.addListener(['path.one', 'path.two'], listener);
 
         // Emit events for both paths
@@ -28,7 +29,7 @@ describe('EventManager', () => {
     });
 
     test('should remove a listener for a specific path', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
         eventManager.addListener('test.path', listener);
 
         // Remove the listener
@@ -40,7 +41,7 @@ describe('EventManager', () => {
     });
 
     test('should remove a listener for multiple paths', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
         eventManager.addListener(['path.one', 'path.two'], listener);
 
         // Remove the listener from both paths
@@ -54,7 +55,7 @@ describe('EventManager', () => {
     });
 
     test('should handle wildcard listeners', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
         eventManager.addListener('$all', listener);
 
         // Emit events for different paths
@@ -67,7 +68,7 @@ describe('EventManager', () => {
     });
 
     test('should handle wildcard listeners with $every', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
         eventManager.addListener('$every.path', listener);
 
         // Emit events for matching paths
@@ -78,7 +79,7 @@ describe('EventManager', () => {
     });
 
     test('should not call removed wildcard listeners', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
         eventManager.addListener('$all', listener);
 
         // Remove the wildcard listener
@@ -92,10 +93,10 @@ describe('EventManager', () => {
     });
 
     test('should handle errors in listener safely', () => {
-        const errorListener: EventListenerFn = jest.fn(() => {
+        const errorListener: EventListenerFn = vi.fn(() => {
             throw new Error('Listener error');
         });
-        const safeListener: EventListenerFn = jest.fn();
+        const safeListener: EventListenerFn = vi.fn();
 
         eventManager.addListener('test.path', errorListener);
         eventManager.addListener('test.path', safeListener);
@@ -110,8 +111,8 @@ describe('EventManager', () => {
     });
 
     test('should handle emitting to multiple listeners', () => {
-        const listenerOne: EventListenerFn = jest.fn();
-        const listenerTwo: EventListenerFn = jest.fn();
+        const listenerOne: EventListenerFn = vi.fn();
+        const listenerTwo: EventListenerFn = vi.fn();
 
         eventManager.addListener('test.path', listenerOne);
         eventManager.addListener('test.path', listenerTwo);
@@ -124,7 +125,7 @@ describe('EventManager', () => {
     });
 
     test('should not call the same listener twice for the same event', () => {
-        const listener: EventListenerFn = jest.fn();
+        const listener: EventListenerFn = vi.fn();
 
         eventManager.addListener('test.path', listener);
         eventManager.addListener('$all', listener);

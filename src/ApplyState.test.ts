@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'vitest';
 import { applyToState, applyToStateIf } from './ApplyState.js';
 
 describe('ApplyState Utility Functions', () => {

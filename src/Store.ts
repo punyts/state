@@ -1,4 +1,4 @@
-import { report, getType, isGenericObject } from '@punyts/core';
+import { report, getType } from '@punyts/core';
 import { applyToState, applyToStateIf, replaceState } from './ApplyState.js';
 import { createEventManager, EventManager, EventListenerFn } from './EventManager.js';
 
@@ -47,6 +47,54 @@ interface StateRef {
     found: boolean
 }
 
+const structuredCloneFn = (globalThis as { structuredClone?: <T>(value: T) => T }).structuredClone;
+
+const cloneValue = <T>(value: T, seen: WeakMap<object, any> = new WeakMap()): T => {
+    if (value === undefined || value === null) {
+        return value;
+    }
+
+    const valueType = typeof value;
+    if (valueType === 'function' || valueType === 'symbol' || valueType === 'bigint') {
+        return value;
+    }
+
+    if (typeof structuredCloneFn === 'function') {
+        try {
+            return structuredCloneFn(value);
+        }
+        catch {
+            // fall back to manual cloning
+        }
+    }
+
+    if (valueType !== 'object') {
+        return value;
+    }
+
+    const objectValue = value as object;
+    if (seen.has(objectValue)) {
+        return seen.get(objectValue);
+    }
+
+    if (Array.isArray(value)) {
+        const cloned: any[] = [];
+        seen.set(objectValue, cloned);
+        for (const item of value as any[]) {
+            cloned.push(cloneValue(item, seen));
+        }
+        return cloned as T;
+    }
+
+    const cloned: Record<PropertyKey, any> = {};
+    seen.set(objectValue, cloned);
+    for (const key of Reflect.ownKeys(objectValue)) {
+        cloned[key as any] = cloneValue((objectValue as any)[key], seen);
+    }
+
+    return cloned as T;
+};
+
 /**
  * If the target is a proxy it gets the target's raw type, otherwise it gets the type of the target
  * @param target
@@ -57,6 +105,11 @@ export const getRawType = (target: any) => {
         ? target.__type
         : getType(target);
 }
+
+const isComposite = (value: any) => {
+    const type = getRawType(value);
+    return type === "object" || type === "array";
+};
 
 /**
  * Returns true if the path is valid
@@ -78,7 +131,7 @@ export const resolveRelativePath = (basePath: string, paths: string | string[]) 
     }
     for (let index in paths) {
         const listenToPath = paths[index];
-        
+
         //relative paths start with a dot
         const match = listenToPath.match(PATT_LEADING_DOTS);
         if (!match) {
@@ -108,7 +161,7 @@ export const resolveRelativePath = (basePath: string, paths: string | string[]) 
 
 export const createStore = <R>(initialState?: R): Store<R> => {
     let state: R = initialState
-        ? JSON.parse(JSON.stringify(initialState))
+        ? cloneValue(initialState)
         : {} as R;
     const eventManager: EventManager = createEventManager();
 
@@ -233,13 +286,15 @@ export const createStore = <R>(initialState?: R): Store<R> => {
 
         //Unwrap the value if it's a proxy
         const rawValue = getRawValue(value);
-        const rawValueIsObject = isGenericObject(rawValue);
+        const rawValueType = getRawType(rawValue);
+        const rawValueIsComposite = ["object", "array"].includes(rawValueType);
 
         //if this is the root state then there won't be a propName
         const currentValue = propName
             ? base[propName]
             : base;
-        const currentIsObject = isGenericObject(currentValue);
+        const currentValueType = getRawType(currentValue);
+        const currentIsComposite = ["object", "array"].includes(currentValueType);
 
         //if the values are equal then nothing to do
         if (rawValue === currentValue) {
@@ -251,13 +306,13 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         ///END LOGGING
 
         //get a copy of the current value to use as the oldValue when emitting the event
-        const oldValue = JSON.parse(JSON.stringify(currentValue));
+        const oldValue = cloneValue(currentValue);
         const hasProp = propName
             ? base.hasOwnProperty(propName)
             : true;
 
         //when both the current and new values are objects, they need to be merged
-        if (rawValueIsObject && currentIsObject) {
+        if (rawValueIsComposite && currentIsComposite) {
             const proxy = createProxy<T>(currentValue, fullPath)
             if (remove) {
                 //using a proxy for the current state will cause change events to be fired for anything that changes downstream
@@ -278,7 +333,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                     rawValue
                 );
             }
-            
+
         }
         //when we have a prop name we're updaing a value directly
         else if (propName && overwrite && remove) {
@@ -295,7 +350,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         if (overwrite && remove) {
             eventManager.emit(
                 fullPath,
-                rawValueIsObject
+                rawValueIsComposite
                     ? createProxy<T>(rawValue, fullPath)
                     : rawValue,
                 oldValue,
@@ -303,7 +358,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             );
 
             //if we are adding a new object to the basePath then we need to fire an event for that
-            if (!hasProp && rawValueIsObject) {
+            if (!hasProp && rawValueIsComposite) {
                 eventManager.emit(
                     basePath,
                     createProxy<T>(base, basePath),
@@ -335,7 +390,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         if (!stateRef.found)
             return false;
 
-        const oldValue = JSON.parse(JSON.stringify(stateRef.parent[stateRef.index as string]));
+        const oldValue = cloneValue(stateRef.parent[stateRef.index as string]);
 
         //if the parent is an array then we need to splice
         if (Array.isArray(stateRef.parent)) {
@@ -377,7 +432,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         const target = getStateByPath(path);
 
         //if the other source is an object or array then let's check the reference
-        if (isGenericObject(source)) {
+        if (isComposite(source)) {
             return getRawValue(source) === target;
         }
         return false;
@@ -418,7 +473,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         if (prop === "__isRefMatch") {
             return (source: T) => {
                 return isRefMatch<T>(basePath, source);
-            } 
+            }
         }
         if (prop === "__keys") {
             return (() => {
@@ -428,12 +483,12 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         if (prop === "__apply") {
             return (source: any) => {
                 return apply<T>(basePath, source);
-            } 
+            }
         }
         if (prop === "__applyIf") {
             return (source: any) => {
                 return applyIf<T>(basePath, source);
-            } 
+            }
         }
         if (prop === "__replace") {
             return (source: any) => {
@@ -475,13 +530,24 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 if (propName in obj) {
                     const value = obj[propName];
                     //for generic arrays and objects create a proxy (skips things like elements)
-                    if (isGenericObject(value)) {
+                    if (isComposite(value)) {
                         return createProxy<T>(value, fullPath);
                     }
                     return value;
                 }
                 //otherwise lets see if the prop matches one of the proxy properties
                 return getProxyProp(basePath, propName, obj);
+            },
+            has(obj, propName) {
+                if (typeof propName !== "string") {
+                    return propName in obj;
+                }
+
+                if (propName in obj) {
+                    return true;
+                }
+
+                return getProxyProp(basePath, propName, obj) !== undefined;
             },
             set(obj, propName, value) {
                 //we don't support symbols
@@ -552,7 +618,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         const sourceType = getRawType(source);
 
         //don't use replace for primitives, just use set
-        if (!isGenericObject(target) || !["object", "array"].includes(sourceType)) {
+        if (!isComposite(target) || !["object", "array"].includes(sourceType)) {
             return false;
         }
 
@@ -564,18 +630,18 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return false;
 
         //copy the current value for the emit
-        const oldValue = JSON.parse(JSON.stringify(getStateByPath(path)));
+        const oldValue = cloneValue(getStateByPath(path));
 
         //Unwrap the value if it's a proxy
         const rawValue = getRawValue(source);
-        const rawValueIsObject = isGenericObject(rawValue);
+        const rawValueIsComposite = isComposite(rawValue);
 
         //set the prop on the parent
         parent[propName] = rawValue;
 
         eventManager.emit(
             path,
-            rawValueIsObject
+            rawValueIsComposite
                 ? createProxy<T>(rawValue, path)
                 : rawValue,
             oldValue,
@@ -593,7 +659,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     const get = <T = any>(path: string): T & ProxyObject => {
         const target = getStateByPath(path)
 
-        if (isGenericObject(target)) {
+        if (isComposite(target)) {
             return createProxy<T>(target, path);
         }
 
@@ -622,7 +688,6 @@ export const createStore = <R>(initialState?: R): Store<R> => {
 
         for (const key in obj)
             keys.push(key);
-        console.log(keys)
         return keys;
     }
 
