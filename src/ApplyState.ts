@@ -1,3 +1,4 @@
+import { report } from "@punyts/core";
 import { getRawType, ProxyObject } from "./Store.js";
 
 /**
@@ -9,6 +10,7 @@ export const applyToStateIf = <T extends object>(
     target: T,
     source: any
 ): void => {
+    report("state-apply", "applyToStateIf invoked", { targetPath: (target as any)?.__path });
     return apply(target, source);
 };
 
@@ -23,6 +25,7 @@ export const applyToState = <T extends object>(
     target: T,
     source: any
 ): void => {
+    report("state-apply", "applyToState invoked", { targetPath: (target as any)?.__path });
     return apply(target, source, true);
 }
 
@@ -36,6 +39,7 @@ export const replaceState = <T extends object>(
     target: T,
     source: any
 ): void => {
+    report("state-apply", "replaceState invoked", { targetPath: (target as any)?.__path });
     return apply(target, source, true, true);
 }
 
@@ -56,6 +60,7 @@ const apply = <T extends object>(
     path: string = "$",
     visited: WeakSet<object> = new WeakSet()
 ) => {
+    report("state-apply-extended", "apply core", { path, overwrite, remove });
     const targetIsObject = ["object", "array"].includes(
         getRawType(target)
     );

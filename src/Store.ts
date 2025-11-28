@@ -49,6 +49,18 @@ interface StateRef {
 
 const structuredCloneFn = (globalThis as { structuredClone?: <T>(value: T) => T }).structuredClone;
 
+const getDebugStack = () => {
+    const stack = new Error().stack;
+    if (!stack) {
+        return "stack-unavailable";
+    }
+    return stack
+        .split("\n")
+        .slice(2, 7)
+        .map((line) => line.trim())
+        .join(" | ");
+};
+
 const cloneValue = <T>(value: T, seen: WeakMap<object, any> = new WeakMap()): T => {
     if (value === undefined || value === null) {
         return value;
@@ -76,7 +88,6 @@ const cloneValue = <T>(value: T, seen: WeakMap<object, any> = new WeakMap()): T 
     if (seen.has(objectValue)) {
         return seen.get(objectValue);
     }
-
     if (Array.isArray(value)) {
         const cloned: any[] = [];
         seen.set(objectValue, cloned);
@@ -161,8 +172,9 @@ export const resolveRelativePath = (basePath: string, paths: string | string[]) 
 
 export const createStore = <R>(initialState?: R): Store<R> => {
     let state: R = initialState
-        ? cloneValue(initialState)
-        : {} as R;
+        ? cloneValue(
+            initialState
+        ) : {} as R;
     const eventManager: EventManager = createEventManager();
 
     /**
@@ -262,7 +274,13 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param value - The value to set at the specified path
      * @returns {boolean} - Returns true if the value was successfully set, false otherwise
      */
-    const setStateByPath = <T>(basePath: string, propName: string, value: any, overwrite: boolean, remove: boolean): boolean => {
+    const setStateByPath = <T>(
+        basePath: string, 
+        propName: string, 
+        value: any, 
+        overwrite: boolean, 
+        remove: boolean
+    ): boolean => {
         basePath = basePath.startsWith("$")
             ? basePath
             : `$.${basePath}`;
@@ -311,6 +329,13 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             ? base.hasOwnProperty(propName)
             : true;
 
+        ///LOGGING
+        if (!overwrite && !remove) {
+            const prop = propName ?? "<root>";
+            report("state-set", "setStateByPath applyIf %s.%s hasProp %s", [basePath, prop, String(hasProp)]);
+        }
+        ///END LOGGING
+
         //when both the current and new values are objects, they need to be merged
         if (rawValueIsComposite && currentIsComposite) {
             const proxy = createProxy<T>(currentValue, fullPath)
@@ -328,6 +353,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 );
             }
             else {
+                console.log("Applying state if condition", rawValue);
                 applyToStateIf(
                     proxy,
                     rawValue
@@ -587,6 +613,11 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     const applyIf = <T = any>(path: string, source: any) => {
         ///LOGGING
         report("state-set", "ApplyIf to %s", [path]);
+        report("state-set", "ApplyIf stack %s", [getDebugStack()]);
+        if (source && typeof source === "object") {
+            const keys = Object.keys(source as object).join(",") || "<none>";
+            report("state-set", "ApplyIf keys %s", [keys]);
+        }
         ///END LOGGING
 
         const { basePath, propName } = getParentAndPropName(path);
