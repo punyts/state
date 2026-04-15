@@ -1,5 +1,5 @@
 import { report } from "@punyts/core";
-import { getRawType, ProxyObject } from "./Store.js";
+import { getRawType, ProxyObject } from "./Types.js";
 
 /**
  * Recursively applys the properties from source to target ONLY IF the target does not have the property

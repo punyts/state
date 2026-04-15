@@ -1,12 +1,13 @@
 import { report, getType } from '@punyts/core';
 import { applyToState, applyToStateIf, replaceState } from './ApplyState.js';
 import { createEventManager, EventManager, EventListenerFn } from './EventManager.js';
+import { ProxyObject as ProxyObjectType, getRawType } from './Types.js';
 
 const PATT_STATE_PATH = /^(?:(?:[0-z$\-_]+)(?:[.](?!$)|$))+$/;
 const PATT_LEADING_DOTS = /^([.]+)(.*)/;
 
 export interface Store<R> {
-    get: <T = any>(path: string) => T & ProxyObject;
+    get: <T = any>(path: string) => T & ProxyObjectType;
     set: <T = any>(path: string, value: Partial<T>) => boolean;
     delete: (path: string) => boolean;
     on: (path: string | string[], listener: EventListenerFn) => void;
@@ -19,20 +20,8 @@ export interface Store<R> {
     state: R;
 }
 
-export type ProxyObject = {
-    readonly __on: (path: string | string[], listener: EventListenerFn) => void;
-    readonly __off: (path: string | string[], listener?: EventListenerFn) => void;
-    readonly __keys: (string | number | Symbol)[];
-    readonly __isProxy: boolean;
-    readonly __type: string;
-    readonly __path: string;
-    readonly __get: <T>(path: string) => T & ProxyObject;
-    readonly __set: <T = any>(path: string, value: Partial<T>) => boolean;
-    readonly __isRefMatch: (source: any) => boolean;
-    readonly __apply: (value: any) => any;
-    readonly __applyIf: (value: any) => any;
-    readonly __replace: (value: any) => any;
-};
+// Re-export ProxyObject from Types for backward compatibility
+export type ProxyObject = ProxyObjectType;
 
 export type DeepProxyObject<T = any> = (
     T extends object
@@ -106,16 +95,8 @@ const cloneValue = <T>(value: T, seen: WeakMap<object, any> = new WeakMap()): T 
     return cloned as T;
 };
 
-/**
- * If the target is a proxy it gets the target's raw type, otherwise it gets the type of the target
- * @param target
- * @returns
- */
-export const getRawType = (target: any) => {
-    return target?.__isProxy
-        ? target.__type
-        : getType(target);
-}
+// getRawType is now imported from Types.ts and re-exported
+export { getRawType } from './Types.js';
 
 const isComposite = (value: any) => {
     const type = getRawType(value);
