@@ -159,6 +159,17 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     const eventManager: EventManager = createEventManager();
 
     /**
+     * Prefixes a root-relative path with "$." so it splits into the right parent and prop name
+     * and matches the $.-keyed listeners ("users" -> "$.users"; "$" and "$.x" are unchanged)
+     * @param path
+     */
+    const normalizePath = (path: string) => {
+        return path === "$" || path.startsWith("$.")
+            ? path
+            : `$.${path}`;
+    }
+
+    /**
      * Takes the last segment off of the path, returns the last segment as the index and the remaining segments as the basePath
      * @param fullPath
      */
@@ -334,7 +345,6 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 );
             }
             else {
-                console.log("Applying state if condition", rawValue);
                 applyToStateIf(
                     proxy,
                     rawValue
@@ -364,8 +374,9 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 hasProp ? "update" : "insert"
             );
 
-            //if we are adding a new object to the basePath then we need to fire an event for that
-            if (!hasProp && rawValueIsComposite) {
+            //if we are adding a new property to the basePath then we need to fire an event for that,
+            //primitives included, otherwise a primitive push is invisible to a listener on the array path
+            if (!hasProp) {
                 eventManager.emit(
                     basePath,
                     createProxy<T>(base, basePath),
@@ -601,7 +612,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         }
         ///END LOGGING
 
-        const { basePath, propName } = getParentAndPropName(path);
+        const { basePath, propName } = getParentAndPropName(normalizePath(path));
         return setStateByPath(basePath, propName, source, false, false);
     }
 
@@ -616,7 +627,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         report("state-set", "Apply to %s", [path]);
         ///END LOGGING
 
-        const { basePath, propName } = getParentAndPropName(path);
+        const { basePath, propName } = getParentAndPropName(normalizePath(path));
         return setStateByPath(basePath, propName, source, true, false);
     }
 
@@ -626,6 +637,9 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param source
      */
     const replace = <T = any>(path: string, source: any) => {
+        //listeners are keyed by $.-prefixed paths, so normalize before splitting and emitting
+        path = normalizePath(path);
+
         const target = getStateByPath(path);
         const sourceType = getRawType(source);
 
@@ -689,7 +703,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         report("state-set", "Set explicitly %s", [path]);
         ///END LOGGING
 
-        const { basePath, propName } = getParentAndPropName(path);
+        const { basePath, propName } = getParentAndPropName(normalizePath(path));
         return setStateByPath(basePath, propName, value, true, true);
     };
 
@@ -713,7 +727,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         report("state-set", "Delete explicitly %s", [path]);
         ///END LOGGING
 
-        const { basePath, propName } = getParentAndPropName(path);
+        const { basePath, propName } = getParentAndPropName(normalizePath(path));
 
         return deleteStateByPath(basePath, propName);
     }

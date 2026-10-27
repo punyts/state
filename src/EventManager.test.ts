@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, it, test, vi } from 'vitest';
 import { createEventManager, EventListenerFn } from './EventManager.js';
 
 describe('EventManager', () => {
@@ -135,5 +135,89 @@ describe('EventManager', () => {
 
         // Listener should only be called once
         expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    describe('re-entrant listener changes during emit', () => {
+        it('should call every snapshotted listener once when a listener removes itself and a neighbour', () => {
+            // Arrange
+            const calls: string[] = [];
+            const listenerB: EventListenerFn = vi.fn(() => calls.push('B'));
+            const listenerC: EventListenerFn = vi.fn(() => calls.push('C'));
+            const listenerA: EventListenerFn = vi.fn(() => {
+                calls.push('A');
+                eventManager.removeListener('test.path', listenerA);
+                eventManager.removeListener('test.path', listenerB);
+            });
+            eventManager.addListener('test.path', listenerA);
+            eventManager.addListener('test.path', listenerB);
+            eventManager.addListener('test.path', listenerC);
+
+            // Act
+            eventManager.emit('test.path', 1, 0, "update");
+
+            // Assert: B was in the snapshot, so it still runs for this emit
+            expect(calls).toEqual(['A', 'B', 'C']);
+            expect(listenerA).toHaveBeenCalledTimes(1);
+            expect(listenerB).toHaveBeenCalledTimes(1);
+            expect(listenerC).toHaveBeenCalledTimes(1);
+        });
+
+        it('should only call the remaining listener on the next emit after removals', () => {
+            // Arrange
+            const listenerB: EventListenerFn = vi.fn();
+            const listenerC: EventListenerFn = vi.fn();
+            const listenerA: EventListenerFn = vi.fn(() => {
+                eventManager.removeListener('test.path', listenerA);
+                eventManager.removeListener('test.path', listenerB);
+            });
+            eventManager.addListener('test.path', listenerA);
+            eventManager.addListener('test.path', listenerB);
+            eventManager.addListener('test.path', listenerC);
+            eventManager.emit('test.path', 1, 0, "update");
+
+            // Act
+            eventManager.emit('test.path', 2, 1, "update");
+
+            // Assert
+            expect(listenerA).toHaveBeenCalledTimes(1);
+            expect(listenerB).toHaveBeenCalledTimes(1);
+            expect(listenerC).toHaveBeenCalledTimes(2);
+        });
+
+        it('should not call a listener added during an emit until the next emit', () => {
+            // Arrange
+            const added: EventListenerFn = vi.fn();
+            const adder: EventListenerFn = vi.fn(() => {
+                eventManager.addListener('test.path', added);
+            });
+            eventManager.addListener('test.path', adder);
+
+            // Act
+            eventManager.emit('test.path', 1, 0, "update");
+
+            // Assert
+            expect(added).not.toHaveBeenCalled();
+            eventManager.removeListener('test.path', adder);
+            eventManager.emit('test.path', 2, 1, "update");
+            expect(added).toHaveBeenCalledTimes(1);
+        });
+
+        it('should skip a wildcard whose listeners were all removed earlier in the same emit', () => {
+            // Arrange
+            const wildcardListener: EventListenerFn = vi.fn();
+            const remover: EventListenerFn = vi.fn(() => {
+                eventManager.removeListener('test.$all', wildcardListener);
+            });
+            eventManager.addListener('test.path', remover);
+            eventManager.addListener('test.$all', wildcardListener);
+
+            // Act
+            const act = () => eventManager.emit('test.path', 1, 0, "update");
+
+            // Assert
+            expect(act).not.toThrow();
+            expect(remover).toHaveBeenCalledTimes(1);
+            expect(wildcardListener).not.toHaveBeenCalled();
+        });
     });
 });

@@ -95,6 +95,22 @@ describe('Store', () => {
             expect(store.get('$.user.name')).toBe('John Doe');
             expect(store.get('$.user.phone')).toBe('555-5555');
         });
+
+        it('should not write to console.log when applying', () => {
+            // Arrange
+            const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+            try {
+                // Act
+                store.applyIf('$.user', { gender: 'female', address: { country: 'US' } });
+
+                // Assert
+                expect(logSpy).not.toHaveBeenCalled();
+            }
+            finally {
+                logSpy.mockRestore();
+            }
+        });
     });
 
     describe('event listeners', () => {
@@ -120,6 +136,106 @@ describe('Store', () => {
             store.off('$.user.name', listener);
 
             store.set('$.user.name', 'Jane Doe');
+            expect(listener).not.toHaveBeenCalled();
+        });
+
+        it('should emit replace on the $.-prefixed path when store.replace is given an unprefixed path', () => {
+            // Arrange
+            store.set('users', { alice: { age: 1 } });
+            const listener = vi.fn();
+            store.on('$.users', listener);
+
+            // Act
+            store.replace('users', { bob: { age: 2 } });
+
+            // Assert
+            expect(listener).toHaveBeenCalledTimes(1);
+            const [path, value, , action] = listener.mock.calls[0];
+            expect(path).toBe('$.users');
+            expect(action).toBe('replace');
+            expect(value.__path).toBe('$.users');
+            expect(store.get('$.users.bob.age')).toBe(2);
+            expect(store.get('$.users.alice')).toBeUndefined();
+        });
+
+        it('should emit replace on the $.-prefixed path when replacing through a proxy', () => {
+            // Arrange
+            store.set('users', { alice: { age: 1 } });
+            const listener = vi.fn();
+            store.on('$.users', listener);
+
+            // Act
+            store.get('users').__replace({ bob: { age: 2 } });
+
+            // Assert
+            expect(listener).toHaveBeenCalledTimes(1);
+            const [path, value, , action] = listener.mock.calls[0];
+            expect(path).toBe('$.users');
+            expect(action).toBe('replace');
+            expect(value.__path).toBe('$.users');
+            expect(store.get('$.users.bob.age')).toBe(2);
+        });
+
+        it('should emit insert on the new index then insert-child on the array when pushing a primitive', () => {
+            // Arrange (fresh store: replacing the fixture's [1, 2, 3] hits the array-mutator bug fixed in E2.3b)
+            store = createStore<any>({});
+            expect(store.set('items', ['a'])).toBe(true);
+            const calls: string[] = [];
+            const indexListener = vi.fn(() => calls.push('index'));
+            const arrayListener = vi.fn(() => calls.push('array'));
+            store.on('$.items.1', indexListener);
+            store.on('$.items', arrayListener);
+
+            // Act
+            store.state.items.push('b');
+
+            // Assert
+            expect(indexListener).toHaveBeenCalledTimes(1);
+            expect(indexListener).toHaveBeenCalledWith('$.items.1', 'b', undefined, 'insert');
+            expect(arrayListener).toHaveBeenCalledTimes(1);
+            expect(arrayListener.mock.calls[0][0]).toBe('$.items');
+            expect(arrayListener.mock.calls[0][3]).toBe('insert-child');
+            expect(calls).toEqual(['index', 'array']);
+        });
+
+        it('should emit insert-child on the parent when adding a new primitive property', () => {
+            // Arrange
+            const listener = vi.fn();
+            store.on('$.user', listener);
+
+            // Act
+            store.set('$.user.nickname', 'JD');
+
+            // Assert
+            expect(listener).toHaveBeenCalledTimes(1);
+            expect(listener.mock.calls[0][3]).toBe('insert-child');
+        });
+
+        it('should resolve a single-segment unprefixed path from the root for every mutator', () => {
+            // Arrange
+            store = createStore<any>({});
+
+            // Act / Assert
+            expect(store.set('users', { alice: 1 })).toBe(true);
+            expect(store.get('$.users.alice')).toBe(1);
+            store.apply('users', { bob: 2 });
+            expect(store.get('$.users.bob')).toBe(2);
+            store.applyIf('users', { alice: 99, carol: 3 });
+            expect(store.get('$.users.alice')).toBe(1);
+            expect(store.get('$.users.carol')).toBe(3);
+            expect(store.delete('users')).toBe(true);
+            expect(store.get('$.users')).toBeUndefined();
+        });
+
+        it('should not emit insert-child when updating an existing primitive property', () => {
+            // Arrange
+            const listener = vi.fn();
+            store.on('$.user', listener);
+
+            // Act
+            store.set('$.user.name', 'Jane Doe');
+
+            // Assert
             expect(listener).not.toHaveBeenCalled();
         });
     });

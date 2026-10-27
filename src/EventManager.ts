@@ -112,8 +112,10 @@ export const createEventManager = (): EventManager => {
 
         for (let path of paths) {
             // Emit for exact path match
+            // iterate a snapshot so listeners added or removed by a callback can't shift the iteration and skip a neighbour;
+            // a listener removed mid-emit still runs if it was in the snapshot, one added mid-emit waits for the next emit
             if (listeners.has(path)) {
-                listeners.get(path)!.forEach((listener) => {
+                [...listeners.get(path)!].forEach((listener) => {
                     if (!calledListeners.has(listener)) {
                         callListener(listener, path, newState, oldState, action);
                         calledListeners.add(listener);
@@ -122,13 +124,17 @@ export const createEventManager = (): EventManager => {
             }
 
             // Emit for wildcard matches
-            wildcards.forEach((regExp, key) => {
+            [...wildcards].forEach(([key, regExp]) => {
                 if (key !== path && regExp.test(path)) {
                     ///LOGGING
                     report("event-emit-wildcard", "Emit event for %s using wildcard %s", [path, regExp.toString()]);
                     ///END LOGGING
-                    const pathListeners = listeners.get(key)!;
-                    pathListeners.forEach((listener) => {
+                    //an earlier callback in this emit may have removed every listener for this wildcard
+                    const pathListeners = listeners.get(key);
+                    if (!pathListeners) {
+                        return;
+                    }
+                    [...pathListeners].forEach((listener) => {
                         if (!calledListeners.has(listener)) {
                             callListener(listener, path, newState, oldState, action);
                             calledListeners.add(listener);
