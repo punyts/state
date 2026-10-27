@@ -131,7 +131,12 @@ const apply = <T extends object>(
 
     //if we are removing then we need to clear out any props not on the source
     if (remove) {
-        Object.keys(target).forEach((key: string) => {
+        const keys = Object.keys(target);
+        //remove extra array indexes from the end, so each splice doesn't shift the indexes still to be removed
+        if (Array.isArray(target)) {
+            keys.reverse();
+        }
+        keys.forEach((key: string) => {
             if (!source.hasOwnProperty(key) && target.hasOwnProperty(key)) {
                 if (Array.isArray(target)) {
                     target.splice(parseInt(key), 1);

@@ -157,6 +157,18 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             initialState
         ) : {} as R;
     const eventManager: EventManager = createEventManager();
+    //maps each proxy this store hands out to the raw object it wraps
+    const proxyTargets: WeakMap<object, any> = new WeakMap();
+
+    const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/;
+    /**
+     * True when propName is an index of the array base (as opposed to "length" or a named prop)
+     * @param base
+     * @param propName
+     */
+    const isArrayIndex = (base: any, propName: string) => {
+        return Array.isArray(base) && ARRAY_INDEX.test(propName);
+    }
 
     /**
      * Prefixes a root-relative path with "$." so it splits into the right parent and prop name
@@ -199,6 +211,11 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      */
     const getRawValue = (value: any) => {
         if (value && typeof value === "object") {
+            //proxies from this store unwrap to their actual target; resolving by path is wrong mid-reorder
+            //(e.g. reverse/sort/shift), when the path may already hold a different element
+            if (proxyTargets.has(value)) {
+                return proxyTargets.get(value);
+            }
             if (value.__isProxy) {
                 return getStateByPath(value.__path);
             }
@@ -328,8 +345,12 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         }
         ///END LOGGING
 
+        //setting an array index replaces the element reference, as on a plain array; merging would overwrite
+        //the element in place, which corrupts arrays when Array methods (sort, reverse, shift, unshift) move elements
+        const replacesArrayElement = overwrite && remove && isArrayIndex(base, propName);
+
         //when both the current and new values are objects, they need to be merged
-        if (rawValueIsComposite && currentIsComposite) {
+        if (rawValueIsComposite && currentIsComposite && !replacesArrayElement) {
             const proxy = createProxy<T>(currentValue, fullPath)
             if (remove) {
                 //using a proxy for the current state will cause change events to be fired for anything that changes downstream
@@ -384,6 +405,16 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                     "insert-child"
                 );
             }
+            //an array element changed in place (sort, reverse, shift, splice...), so tell the array path too;
+            //objects keep the no fan-out rule and only emit on the property path
+            else if (isArrayIndex(base, propName)) {
+                eventManager.emit(
+                    basePath,
+                    createProxy<T>(base, basePath),
+                    undefined,
+                    "update-child"
+                );
+            }
         }
 
         return true;
@@ -393,9 +424,12 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * Deletes the property
      * @param basePath
      * @param propName
+     * @param leaveHole - true for the proxy deleteProperty trap: an array index becomes a hole, as with a plain
+     * `delete arr[i]`, because Array methods (shift, splice, pop) move elements and set length themselves;
+     * false for store.delete, which removes the element at that index
      * @returns
      */
-    const deleteStateByPath = (basePath: string, propName: string): boolean => {
+    const deleteStateByPath = (basePath: string, propName: string, leaveHole: boolean = false): boolean => {
         basePath = basePath.startsWith("$")
             ? basePath
             : `$.${basePath}`;
@@ -410,9 +444,9 @@ export const createStore = <R>(initialState?: R): Store<R> => {
 
         const oldValue = cloneValue(stateRef.parent[stateRef.index as string]);
 
-        //if the parent is an array then we need to splice
-        if (Array.isArray(stateRef.parent)) {
-            stateRef.parent.splice(stateRef.parent.indexOf(stateRef.value), 1);
+        //for an explicit delete of an array element, splice at the index (indexOf picks the wrong slot for duplicates)
+        if (Array.isArray(stateRef.parent) && !leaveHole) {
+            stateRef.parent.splice(Number(stateRef.index), 1);
         }
         //otherwise we can delete it outright
         else {
@@ -536,7 +570,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @returns
      */
     const createProxy = <T>(target: any, basePath: string): T & ProxyObject => {
-        return new Proxy(target, {
+        const proxy = new Proxy(target, {
             get(obj, propName) {
                 //we don't support symbols
                 if (typeof propName !== 'string') {
@@ -591,9 +625,17 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 report("state-set", "Delete by proxy %s", [`${basePath}.${propName}`]);
                 ///END LOGGING
 
-                return deleteStateByPath(basePath, propName);
+                //deleting a missing property (e.g. an array hole) succeeds, as with plain delete;
+                //returning false would make Array methods throw from DeletePropertyOrThrow
+                if (!(propName in obj)) {
+                    return true;
+                }
+
+                return deleteStateByPath(basePath, propName, true);
             }
         });
+        proxyTargets.set(proxy, target);
+        return proxy;
     };
 
     /**
