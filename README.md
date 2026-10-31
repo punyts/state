@@ -48,7 +48,8 @@ store.link('$.view.order', '$.data.orders.k43'); // true, $.view.order was an al
   path, the value the alias shows now and the value it showed before. No listener is added or removed.
 - A link whose target is another alias follows it. Every alias that resolves through the re-pointed one is notified too
   (a detail field linked to a list's `current`, or an alias linked to `$.slot.row.x` when `$.slot.row` is re-pointed).
-  A listener is called once per re-point, even when it is registered on several of those aliases.
+  A listener is called once per re-point, even when it is registered on several of those aliases, and also when it sits
+  below an alias that leads to a path below, or above, another alias that the re-point changes (any depth of aliases).
 - The work does not depend on the size of the store: a re-point reads the old and the new target and each notified alias,
   nothing else.
 - A re-point that is refused (`false`) leaves the alias as it was.

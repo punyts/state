@@ -239,23 +239,54 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     }
 
     /**
-     * True when following the links from path reaches alias, or a path below it
+     * The path and every path it leads to while links are followed, ending at the resolved path
      * @param path - a "$."-prefixed path
-     * @param alias - a "$."-prefixed alias path
      */
-    const resolvesThrough = (path: string, alias: string): boolean => {
+    const linkChain = (path: string): string[] => {
+        const chain = [path];
         let current = path;
         for (let hops = 0; hops <= links.size; hops++) {
-            if (current === alias || current.startsWith(`${alias}.`)) {
-                return true;
-            }
             const next = followLink(current, links);
             if (next === undefined) {
-                return false;
+                break;
             }
+            chain.push(next);
             current = next;
         }
-        return false;
+        return chain;
+    }
+
+    /**
+     * Every path whose resolved path changes when the alias is re-pointed, as the roots of the trees to notify:
+     * the alias itself, each alias whose target leads through a root, and each path below an alias whose target
+     * leads to a path above a root (the alias path followed by the rest of the root path).
+     * Repeated until no root is added, which covers any depth and arrangement of aliases.
+     * @param alias - the re-pointed alias path
+     */
+    const repointedPaths = (alias: string): string[] => {
+        const roots = new Set<string>([alias]);
+        for (let added = true; added;) {
+            added = false;
+            for (const [from, target] of links) {
+                const chain = linkChain(target);
+                for (const root of [...roots]) {
+                    for (const hop of chain) {
+                        let reached: string | undefined;
+                        if (hop === root || hop.startsWith(`${root}.`)) {
+                            reached = from;
+                        }
+                        else if (root.startsWith(`${hop}.`)) {
+                            reached = `${from}${root.slice(hop.length)}`;
+                        }
+                        if (reached !== undefined && !roots.has(reached)) {
+                            roots.add(reached);
+                            added = true;
+                        }
+                    }
+                }
+            }
+        }
+        return [...roots];
     }
 
     /**
@@ -289,26 +320,40 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * A change at or above the alias target reaches the alias path and everything listening below it with the alias
      * path in the event; a change inside the target reaches the mapped path below the alias.
      * Changes to the children of a path above the target leave the target alone and are not passed on.
+     * An alias path is itself a path other aliases can lead to, so each alias event is passed on the same way, which
+     * reaches listeners below an alias that leads to another alias. Every event is emitted once.
      * @param path - the resolved path that changed
      */
     const emitChange = (path: string, value: any, oldValue: any, action: string) => {
         eventManager.emit(path, value, oldValue, action);
 
-        for (const [from, to] of [...links]) {
-            const target = resolvePath(to);
+        if (links.size === 0) {
+            return;
+        }
 
-            if (path === target) {
-                eventManager.emitTree(from, value, oldValue, action);
-            }
-            else if (target.startsWith(`${path}.`)) {
-                if (!action.endsWith("-child")) {
-                    eventManager.emitTree(from, value, oldValue, action);
+        const emitted = new Set<string>();
+        const spread = (changed: string): void => {
+            for (const [from, to] of [...links]) {
+                for (const target of new Set([resolvePath(to), to])) {
+                    if (changed === target || (target.startsWith(`${changed}.`) && !action.endsWith("-child"))) {
+                        if (!emitted.has(`tree:${from}`)) {
+                            emitted.add(`tree:${from}`);
+                            eventManager.emitTree(from, value, oldValue, action);
+                            spread(from);
+                        }
+                    }
+                    else if (changed.startsWith(`${target}.`)) {
+                        const mapped = `${from}${changed.slice(target.length)}`;
+                        if (!emitted.has(mapped)) {
+                            emitted.add(mapped);
+                            eventManager.emit(mapped, value, oldValue, action);
+                            spread(mapped);
+                        }
+                    }
                 }
             }
-            else if (path.startsWith(`${target}.`)) {
-                eventManager.emit(`${from}${path.slice(target.length)}`, value, oldValue, action);
-            }
         }
+        spread(path);
     }
 
     /**
@@ -982,12 +1027,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         const oldLinks = new Map(links);
         links.set(from, to);
 
-        const aliases = [from];
-        for (const [alias, target] of links) {
-            if (alias !== from && resolvesThrough(target, from)) {
-                aliases.push(alias);
-            }
-        }
+        const aliases = repointedPaths(from);
         eventManager.emitTrees(
             aliases.map((alias) => ({
                 path: alias,

@@ -569,6 +569,84 @@ describe('Store links', () => {
         });
     });
 
+    describe('re-pointing through several aliases', () => {
+        beforeEach(() => {
+            store.set('$.data.orders.k43.address', { city: 'Bergen' });
+            store.set('$.holder', {});
+            store.set('$.app', {});
+        });
+
+        it('should notify a listener under an alias whose target lies under the re-pointed alias once', () => {
+            store.link('$.app.current', '$.data.orders.k42');
+            store.link('$.view.addr', '$.app.current.address');
+            const listener = vi.fn();
+            store.on('$.view.addr.city', listener);
+
+            store.link('$.app.current', '$.data.orders.k43');
+
+            expect(listener).toHaveBeenCalledTimes(1);
+            expect(store.get('$.view.addr.city')).toBe('Bergen');
+        });
+
+        it('should notify a listener reached through an outer alias and an inner alias that leads through the re-pointed one once', () => {
+            store.link('$.app.current', '$.data.orders.k42');
+            store.link('$.app.record', '$.app.current');
+            store.link('$.holder.address', '$.app.record.address');
+            store.link('$.view.row', '$.holder');
+            const listener = vi.fn();
+            store.on('$.view.row.address.city', listener);
+
+            store.link('$.app.current', '$.data.orders.k43');
+
+            expect(listener).toHaveBeenCalledTimes(1);
+            expect(store.get('$.view.row.address.city')).toBe('Bergen');
+        });
+
+        it('should notify a listener behind an outer alias and an inner alias once when the new target changes', () => {
+            store.link('$.app.current', '$.data.orders.k42');
+            store.link('$.app.record', '$.app.current');
+            store.link('$.holder.address', '$.app.record.address');
+            store.link('$.view.row', '$.holder');
+            store.link('$.app.current', '$.data.orders.k43');
+            const listener = vi.fn();
+            store.on('$.view.row.address.city', listener);
+
+            store.set('$.data.orders.k43.address.city', 'Tromso');
+
+            expect(listener).toHaveBeenCalledTimes(1);
+            expect(store.get('$.view.row.address.city')).toBe('Tromso');
+        });
+
+        it('should notify once through a chain of three aliases', () => {
+            store.link('$.app.c1', '$.data.orders.k42');
+            store.link('$.app.c2', '$.app.c1');
+            store.link('$.app.c3', '$.app.c2');
+            store.link('$.holder.address', '$.app.c3.address');
+            store.link('$.view.row', '$.holder');
+            const deep = vi.fn();
+            store.on('$.view.row.address.city', deep);
+
+            store.link('$.app.c1', '$.data.orders.k43');
+
+            expect(deep).toHaveBeenCalledTimes(1);
+            expect(store.get('$.view.row.address.city')).toBe('Bergen');
+            expect(store.get('$.app.c3.address.city')).toBe('Bergen');
+        });
+
+        it('should notify once for a link whose target path passes through a re-pointed alias', () => {
+            store.link('$.app.current', '$.data.orders.k42');
+            store.link('$.holder.city', '$.app.current.address.city');
+            store.link('$.view.row', '$.holder');
+            const listener = vi.fn();
+            store.on('$.view.row.city', listener);
+
+            store.link('$.app.current', '$.data.orders.k43');
+
+            expect(listener).toHaveBeenCalledTimes(1);
+            expect(store.get('$.view.row.city')).toBe('Bergen');
+        });
+    });
+
     describe('allowMissing', () => {
         it('should refuse a missing target without the option', () => {
             expect(store.link('$.view.x', '$.data.orders.k42.x')).toBe(false);
