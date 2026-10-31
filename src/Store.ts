@@ -17,6 +17,8 @@ export interface Store<R> {
     applyIf: (path: string, source: any) => void;
     isRefMatch: (path: string, source: any) => boolean;
     replace: (path: string, source: any) => void;
+    link: (fromPath: string, toPath: string) => boolean;
+    unlink: (fromPath: string) => boolean;
     state: R;
 }
 
@@ -157,6 +159,9 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             initialState
         ) : {} as R;
     const eventManager: EventManager = createEventManager();
+    //alias path -> target path, both "$."-prefixed. Links are runtime structure of the store, never part of the state data;
+    //the target is kept as given and resolved on every access, so an alias whose target is itself an alias follows it
+    const links: Map<string, string> = new Map();
     //maps each proxy this store hands out to the raw object it wraps
     const proxyTargets: WeakMap<object, any> = new WeakMap();
 
@@ -179,6 +184,75 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         return path === "$" || path.startsWith("$.")
             ? path
             : `$.${path}`;
+    }
+
+    /**
+     * Follows the links from path until no alias is left in it: a path at or below an alias becomes the same path
+     * below the alias target. The shortest alias prefix is followed first.
+     * Returns undefined when the links loop.
+     * @param path - a "$."-prefixed path
+     * @param linkMap - the links to follow, the store links by default
+     */
+    const resolveLinks = (path: string, linkMap: Map<string, string> = links): string | undefined => {
+        if (linkMap.size === 0) {
+            return path;
+        }
+
+        let current = path;
+        for (let hops = 0; hops <= linkMap.size; hops++) {
+            let prefix: string | undefined;
+            let dot = current.indexOf(".");
+            while (prefix === undefined) {
+                const candidate = dot === -1 ? current : current.slice(0, dot);
+                if (linkMap.has(candidate)) {
+                    prefix = candidate;
+                }
+                else if (dot === -1) {
+                    return current;
+                }
+                else {
+                    dot = current.indexOf(".", dot + 1);
+                }
+            }
+            current = linkMap.get(prefix)! + current.slice(prefix.length);
+        }
+
+        return undefined;
+    }
+
+    /**
+     * The path with every link followed; a path that cannot be resolved is returned as it is
+     * @param path - a "$."-prefixed path
+     */
+    const resolvePath = (path: string): string => {
+        return resolveLinks(path) ?? path;
+    }
+
+    /**
+     * Emits the change at path, then tells the listeners of every alias that shows the changed value.
+     * A change at or above the alias target reaches the alias path and everything listening below it with the alias
+     * path in the event; a change inside the target reaches the mapped path below the alias.
+     * Changes to the children of a path above the target leave the target alone and are not passed on.
+     * @param path - the resolved path that changed
+     */
+    const emitChange = (path: string, value: any, oldValue: any, action: string) => {
+        eventManager.emit(path, value, oldValue, action);
+
+        for (const [from, to] of [...links]) {
+            const target = resolvePath(to);
+
+            if (path === target) {
+                eventManager.emitTree(from, value, oldValue, action);
+            }
+            else if (target.startsWith(`${path}.`)) {
+                if (!action.endsWith("-child")) {
+                    eventManager.emitTree(from, value, oldValue, action);
+                }
+            }
+            else if (path.startsWith(`${target}.`)) {
+                eventManager.emit(`${from}${path.slice(target.length)}`, value, oldValue, action);
+            }
+        }
     }
 
     /**
@@ -239,6 +313,11 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return { parent: { $: state }, index: "$", value: state, found: true };;
         }
 
+        //follow links so every read lands on the target
+        if (links.size > 0) {
+            path = resolvePath(normalizePath(path));
+        }
+
         // Normalize the path to remove leading "$." if present
         const normalizedPath = path.startsWith('$.') ? path.slice(2) : path;
 
@@ -294,9 +373,18 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             ? basePath
             : `$.${basePath}`;
 
-        const fullPath = propName
+        let fullPath = propName
             ? `${basePath}.${propName}`
             : basePath;
+
+        //a write at or below an alias lands on the target, and events are emitted for the target path
+        if (links.size > 0) {
+            const resolvedPath = resolvePath(fullPath);
+            if (resolvedPath !== fullPath) {
+                fullPath = resolvedPath;
+                ({ basePath, propName } = getParentAndPropName(resolvedPath));
+            }
+        }
 
         //get the state for the basePath
         const { value: base, found: baseFound } = getStateRef(basePath);
@@ -386,7 +474,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         // the rawValue, the new state value, should be wrapped in a proxy, the currentValue, aka oldValue, is a raw object
         // this should only fire if we are doing a replace
         if (overwrite && remove) {
-            eventManager.emit(
+            emitChange(
                 fullPath,
                 rawValueIsComposite
                     ? createProxy<T>(rawValue, fullPath)
@@ -398,7 +486,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             //if we are adding a new property to the basePath then we need to fire an event for that,
             //primitives included, otherwise a primitive push is invisible to a listener on the array path
             if (!hasProp) {
-                eventManager.emit(
+                emitChange(
                     basePath,
                     createProxy<T>(base, basePath),
                     undefined,
@@ -408,7 +496,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             //an array element changed in place (sort, reverse, shift, splice...), so tell the array path too;
             //objects keep the no fan-out rule and only emit on the property path
             else if (isArrayIndex(base, propName)) {
-                eventManager.emit(
+                emitChange(
                     basePath,
                     createProxy<T>(base, basePath),
                     undefined,
@@ -434,9 +522,18 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             ? basePath
             : `$.${basePath}`;
 
-        const fullPath = propName
+        let fullPath = propName
             ? `${basePath}.${propName}`
             : basePath;
+
+        //deleting at or below an alias deletes on the target
+        if (links.size > 0) {
+            const resolvedPath = resolvePath(fullPath);
+            if (resolvedPath !== fullPath) {
+                fullPath = resolvedPath;
+                ({ basePath, propName } = getParentAndPropName(resolvedPath));
+            }
+        }
 
         const stateRef = getStateRef(fullPath);
         if (!stateRef.found)
@@ -453,7 +550,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             delete stateRef.parent[stateRef.index as string];
         }
 
-        eventManager.emit(
+        emitChange(
             fullPath,
             undefined,
             oldValue,
@@ -462,7 +559,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
 
         //emit an event for the base path since it is changing as well
         if (basePath !== fullPath) {
-            eventManager.emit(
+            emitChange(
                 basePath,
                 undefined,
                 oldValue,
@@ -587,6 +684,15 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                     }
                     return value;
                 }
+                //a property that is an alias shows the value of its target
+                if (links.size > 0) {
+                    const linked = getStateRef(fullPath);
+                    if (linked.found) {
+                        return isComposite(linked.value)
+                            ? createProxy<T>(linked.value, fullPath)
+                            : linked.value;
+                    }
+                }
                 //otherwise lets see if the prop matches one of the proxy properties
                 return getProxyProp(basePath, propName, obj);
             },
@@ -596,6 +702,10 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 }
 
                 if (propName in obj) {
+                    return true;
+                }
+
+                if (links.size > 0 && getStateRef(`${basePath}.${propName}`).found) {
                     return true;
                 }
 
@@ -680,7 +790,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      */
     const replace = <T = any>(path: string, source: any) => {
         //listeners are keyed by $.-prefixed paths, so normalize before splitting and emitting
-        path = normalizePath(path);
+        path = resolvePath(normalizePath(path));
 
         const target = getStateByPath(path);
         const sourceType = getRawType(source);
@@ -707,7 +817,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         //set the prop on the parent
         parent[propName] = rawValue;
 
-        eventManager.emit(
+        emitChange(
             path,
             rawValueIsComposite
                 ? createProxy<T>(rawValue, path)
@@ -717,6 +827,59 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         );
 
         return true;
+    }
+
+    /**
+     * Makes fromPath an alias of toPath: reads and writes at or below fromPath act on toPath, and changes at toPath
+     * notify the listeners of fromPath. The alias is runtime structure, it is never part of the state data.
+     * Returns false when the target does not exist, when the target is the alias itself, inside it or above it,
+     * when the links would loop, or when fromPath already is an alias or already holds data.
+     * @param fromPath - the alias path
+     * @param toPath - the path the alias stands for
+     */
+    const link = (fromPath: string, toPath: string): boolean => {
+        if (typeof fromPath !== "string" || typeof toPath !== "string") {
+            return false;
+        }
+
+        const from = normalizePath(fromPath);
+        const to = normalizePath(toPath);
+
+        if (from === "$" || !validatePath(from) || !validatePath(to)) {
+            return false;
+        }
+
+        //an alias must not hide data in the state; moving an existing alias is not supported yet
+        if (links.has(from) || getStateRef(from).found) {
+            return false;
+        }
+
+        //an alias whose chain returns to itself, or that holds or is held by its own target, would never settle
+        const resolvedTarget = resolveLinks(to, new Map(links).set(from, to));
+        if (
+            resolvedTarget === undefined
+            || resolvedTarget === from
+            || resolvedTarget.startsWith(`${from}.`)
+            || from.startsWith(`${resolvedTarget}.`)
+        ) {
+            return false;
+        }
+
+        if (!getStateRef(resolvedTarget).found) {
+            return false;
+        }
+
+        links.set(from, to);
+        return true;
+    }
+
+    /**
+     * Removes the alias at fromPath. Listeners stay registered; they just stop hearing the former target.
+     * Returns false when fromPath is not an alias.
+     * @param fromPath
+     */
+    const unlink = (fromPath: string): boolean => {
+        return typeof fromPath === "string" && links.delete(normalizePath(fromPath));
     }
 
     /**
@@ -783,6 +946,8 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         applyIf,
         isRefMatch,
         replace,
+        link,
+        unlink,
         on: eventManager.addListener,
         off: eventManager.removeListener,
         state: createProxy<R>(state, "$")

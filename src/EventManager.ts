@@ -12,6 +12,7 @@ export interface EventManager {
     addListener: (path: string | string[], listener: EventListenerFn) => void;
     removeListener: (path: string | string[], listener?: EventListenerFn) => void;
     emit: (path: string | string[], value: any, oldValue: any, action: string) => void;
+    emitTree: (path: string, value: any, oldValue: any, action: string) => void;
 }
 
 export const createEventManager = (): EventManager => {
@@ -146,6 +147,35 @@ export const createEventManager = (): EventManager => {
     };
 
     /**
+     * Emits an event to every listener registered at the path or below it, each called once with the path given.
+     * Used to tell the listeners of a link alias that the value behind the alias changed.
+     * @param path The path whose listeners, and the listeners below it, are called.
+     */
+    const emitTree = (path: string, newState: any, oldState: any, action: string): void => {
+        ///LOGGING
+        report("event-emit", "Emit tree event for %s to %", [path, action]);
+        ///END LOGGING
+
+        const calledListeners = new Set<EventListenerFn>();
+        const prefix = `${path}.`;
+
+        [...listeners].forEach(([key, pathListeners]) => {
+            const matches = key === path
+                || key.startsWith(prefix)
+                || (wildcards.get(key)?.test(path) ?? false);
+            if (!matches) {
+                return;
+            }
+            [...pathListeners].forEach((listener) => {
+                if (!calledListeners.has(listener)) {
+                    callListener(listener, path, newState, oldState, action);
+                    calledListeners.add(listener);
+                }
+            });
+        });
+    };
+
+    /**
      * Calls the listener handler function safely
      * @param listener
      * @param args
@@ -167,5 +197,6 @@ export const createEventManager = (): EventManager => {
         addListener,
         removeListener,
         emit,
+        emitTree,
     };
 };
