@@ -8,11 +8,18 @@ const PATT_ALL_DOLLAR = /[$]/g;
 const PATT_ALL_EVERY = /[$]every/g;
 const PATT_ALL_ALL = /[$]all/g;
 
+export interface EventTreeTarget {
+    path: string;
+    value: any;
+    oldValue: any;
+}
+
 export interface EventManager {
     addListener: (path: string | string[], listener: EventListenerFn) => void;
     removeListener: (path: string | string[], listener?: EventListenerFn) => void;
     emit: (path: string | string[], value: any, oldValue: any, action: string) => void;
     emitTree: (path: string, value: any, oldValue: any, action: string) => void;
+    emitTrees: (targets: EventTreeTarget[], action: string) => void;
 }
 
 export const createEventManager = (): EventManager => {
@@ -152,23 +159,33 @@ export const createEventManager = (): EventManager => {
      * @param path The path whose listeners, and the listeners below it, are called.
      */
     const emitTree = (path: string, newState: any, oldState: any, action: string): void => {
+        emitTrees([{ path, value: newState, oldValue: oldState }], action);
+    };
+
+    /**
+     * Emits one event per target in a single pass over the listeners: every listener registered at a target path or
+     * below it is called once in total, with the path and values of the first target that reaches it.
+     * Used when a re-pointed alias changes what several aliases show at once.
+     * @param targets The paths to notify, with the value each one shows now and showed before.
+     * @param action The action to report.
+     */
+    const emitTrees = (targets: EventTreeTarget[], action: string): void => {
         ///LOGGING
-        report("event-emit", "Emit tree event for %s to %", [path, action]);
+        report("event-emit", "Emit tree event for %s to %", [targets.map((target) => target.path), action]);
         ///END LOGGING
 
         const calledListeners = new Set<EventListenerFn>();
-        const prefix = `${path}.`;
 
         [...listeners].forEach(([key, pathListeners]) => {
-            const matches = key === path
-                || key.startsWith(prefix)
-                || (wildcards.get(key)?.test(path) ?? false);
-            if (!matches) {
+            const target = targets.find(({ path }) => key === path
+                || key.startsWith(`${path}.`)
+                || (wildcards.get(key)?.test(path) ?? false));
+            if (!target) {
                 return;
             }
             [...pathListeners].forEach((listener) => {
                 if (!calledListeners.has(listener)) {
-                    callListener(listener, path, newState, oldState, action);
+                    callListener(listener, target.path, target.value, target.oldValue, action);
                     calledListeners.add(listener);
                 }
             });
@@ -198,5 +215,6 @@ export const createEventManager = (): EventManager => {
         removeListener,
         emit,
         emitTree,
+        emitTrees,
     };
 };

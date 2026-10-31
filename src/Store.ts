@@ -6,6 +6,11 @@ import { ProxyObject as ProxyObjectType, getRawType } from './Types.js';
 const PATT_STATE_PATH = /^(?:(?:[0-z$\-_]+)(?:[.](?!$)|$))+$/;
 const PATT_LEADING_DOTS = /^([.]+)(.*)/;
 
+export interface LinkOptions {
+    /** accept a target that does not exist yet, as long as its parent does */
+    allowMissing?: boolean;
+}
+
 export interface Store<R> {
     get: <T = any>(path: string) => T & ProxyObjectType;
     set: <T = any>(path: string, value: Partial<T>) => boolean;
@@ -17,8 +22,10 @@ export interface Store<R> {
     applyIf: (path: string, source: any) => void;
     isRefMatch: (path: string, source: any) => boolean;
     replace: (path: string, source: any) => void;
-    link: (fromPath: string, toPath: string) => boolean;
+    link: (fromPath: string, toPath: string, options?: LinkOptions) => boolean;
     unlink: (fromPath: string) => boolean;
+    protect: (path: string) => boolean;
+    unprotect: (path: string) => boolean;
     state: R;
 }
 
@@ -164,6 +171,8 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     const links: Map<string, string> = new Map();
     //maps each proxy this store hands out to the raw object it wraps
     const proxyTargets: WeakMap<object, any> = new WeakMap();
+    //read-only paths, "$."-prefixed; a write at or below one is refused
+    const protectedPaths: Set<string> = new Set();
 
     const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/;
     /**
@@ -187,8 +196,27 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     }
 
     /**
-     * Follows the links from path until no alias is left in it: a path at or below an alias becomes the same path
-     * below the alias target. The shortest alias prefix is followed first.
+     * Follows one link: a path at or below an alias becomes the same path below the alias target.
+     * The shortest alias prefix is followed. Returns undefined when no alias is in the path.
+     * @param path - a "$."-prefixed path
+     * @param linkMap - the links to follow
+     */
+    const followLink = (path: string, linkMap: Map<string, string>): string | undefined => {
+        let dot = path.indexOf(".");
+        for (;;) {
+            const candidate = dot === -1 ? path : path.slice(0, dot);
+            if (linkMap.has(candidate)) {
+                return linkMap.get(candidate)! + path.slice(candidate.length);
+            }
+            if (dot === -1) {
+                return undefined;
+            }
+            dot = path.indexOf(".", dot + 1);
+        }
+    }
+
+    /**
+     * Follows the links from path until no alias is left in it.
      * Returns undefined when the links loop.
      * @param path - a "$."-prefixed path
      * @param linkMap - the links to follow, the store links by default
@@ -200,24 +228,52 @@ export const createStore = <R>(initialState?: R): Store<R> => {
 
         let current = path;
         for (let hops = 0; hops <= linkMap.size; hops++) {
-            let prefix: string | undefined;
-            let dot = current.indexOf(".");
-            while (prefix === undefined) {
-                const candidate = dot === -1 ? current : current.slice(0, dot);
-                if (linkMap.has(candidate)) {
-                    prefix = candidate;
-                }
-                else if (dot === -1) {
-                    return current;
-                }
-                else {
-                    dot = current.indexOf(".", dot + 1);
-                }
+            const next = followLink(current, linkMap);
+            if (next === undefined) {
+                return current;
             }
-            current = linkMap.get(prefix)! + current.slice(prefix.length);
+            current = next;
         }
 
         return undefined;
+    }
+
+    /**
+     * True when following the links from path reaches alias, or a path below it
+     * @param path - a "$."-prefixed path
+     * @param alias - a "$."-prefixed alias path
+     */
+    const resolvesThrough = (path: string, alias: string): boolean => {
+        let current = path;
+        for (let hops = 0; hops <= links.size; hops++) {
+            if (current === alias || current.startsWith(`${alias}.`)) {
+                return true;
+            }
+            const next = followLink(current, links);
+            if (next === undefined) {
+                return false;
+            }
+            current = next;
+        }
+        return false;
+    }
+
+    /**
+     * True when path is a protected path or lies below one
+     * @param path - a "$."-prefixed path
+     */
+    const isProtected = (path: string): boolean => {
+        if (protectedPaths.size === 0) {
+            return false;
+        }
+        for (let dot = path.indexOf("."); ; dot = path.indexOf(".", dot + 1)) {
+            if (protectedPaths.has(dot === -1 ? path : path.slice(0, dot))) {
+                return true;
+            }
+            if (dot === -1) {
+                return false;
+            }
+        }
     }
 
     /**
@@ -333,7 +389,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         for (let i = 0; i < len; i++) {
             const segment = segments[i];
 
-            if (segment in current) {
+            if (current !== null && typeof current === "object" && segment in current) {
                 parent = current;
                 index = segment;
                 current = current[segment];
@@ -377,12 +433,20 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             ? `${basePath}.${propName}`
             : basePath;
 
+        //a protected path refuses writes, at the path given and at the target an alias leads to
+        if (isProtected(fullPath)) {
+            return false;
+        }
+
         //a write at or below an alias lands on the target, and events are emitted for the target path
         if (links.size > 0) {
             const resolvedPath = resolvePath(fullPath);
             if (resolvedPath !== fullPath) {
                 fullPath = resolvedPath;
                 ({ basePath, propName } = getParentAndPropName(resolvedPath));
+                if (isProtected(fullPath)) {
+                    return false;
+                }
             }
         }
 
@@ -526,12 +590,19 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             ? `${basePath}.${propName}`
             : basePath;
 
+        if (isProtected(fullPath)) {
+            return false;
+        }
+
         //deleting at or below an alias deletes on the target
         if (links.size > 0) {
             const resolvedPath = resolvePath(fullPath);
             if (resolvedPath !== fullPath) {
                 fullPath = resolvedPath;
                 ({ basePath, propName } = getParentAndPropName(resolvedPath));
+                if (isProtected(fullPath)) {
+                    return false;
+                }
             }
         }
 
@@ -741,6 +812,11 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                     return true;
                 }
 
+                //a protected path ignores the delete, as the set trap ignores a write
+                if (isProtected(`${basePath}.${propName}`) || isProtected(resolvePath(`${basePath}.${propName}`))) {
+                    return true;
+                }
+
                 return deleteStateByPath(basePath, propName, true);
             }
         });
@@ -790,7 +866,14 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      */
     const replace = <T = any>(path: string, source: any) => {
         //listeners are keyed by $.-prefixed paths, so normalize before splitting and emitting
-        path = resolvePath(normalizePath(path));
+        path = normalizePath(path);
+        if (isProtected(path)) {
+            return false;
+        }
+        path = resolvePath(path);
+        if (isProtected(path)) {
+            return false;
+        }
 
         const target = getStateByPath(path);
         const sourceType = getRawType(source);
@@ -830,14 +913,28 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     }
 
     /**
+     * An event value for the resolved path: a composite value as a proxy, a primitive as it is, undefined when missing
+     * @param path - a resolved "$."-prefixed path
+     */
+    const readEventValue = (path: string) => {
+        const ref = getStateRef(path);
+        return ref.found && isComposite(ref.value)
+            ? createProxy(ref.value, path)
+            : ref.value;
+    }
+
+    /**
      * Makes fromPath an alias of toPath: reads and writes at or below fromPath act on toPath, and changes at toPath
      * notify the listeners of fromPath. The alias is runtime structure, it is never part of the state data.
-     * Returns false when the target does not exist, when the target is the alias itself, inside it or above it,
-     * when the links would loop, or when fromPath already is an alias or already holds data.
+     * When fromPath already is an alias it is re-pointed to toPath: the listeners at and below it, and those on every
+     * alias that resolves through it, are notified once with the "relink" action, and no listener is added or removed.
+     * Returns false when the target does not exist (unless options.allowMissing is set and its parent exists), when the
+     * target is the alias itself, inside it or above it, when the links would loop, or when fromPath holds data.
      * @param fromPath - the alias path
      * @param toPath - the path the alias stands for
+     * @param options - allowMissing accepts a target that does not exist yet
      */
-    const link = (fromPath: string, toPath: string): boolean => {
+    const link = (fromPath: string, toPath: string, options?: LinkOptions): boolean => {
         if (typeof fromPath !== "string" || typeof toPath !== "string") {
             return false;
         }
@@ -849,8 +946,9 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return false;
         }
 
-        //an alias must not hide data in the state; moving an existing alias is not supported yet
-        if (links.has(from) || getStateRef(from).found) {
+        //an alias must not hide data in the state
+        const repoint = links.has(from);
+        if (!repoint && getStateRef(from).found) {
             return false;
         }
 
@@ -865,12 +963,67 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return false;
         }
 
-        if (!getStateRef(resolvedTarget).found) {
+        if (options?.allowMissing) {
+            //the parent of a missing target must exist and be able to hold it
+            const parentPath = getParentAndPropName(resolvedTarget).basePath;
+            if (!isComposite(getStateRef(parentPath).value)) {
+                return false;
+            }
+        }
+        else if (!getStateRef(resolvedTarget).found) {
             return false;
         }
 
+        if (!repoint) {
+            links.set(from, to);
+            return true;
+        }
+
+        const oldLinks = new Map(links);
         links.set(from, to);
+
+        const aliases = [from];
+        for (const [alias, target] of links) {
+            if (alias !== from && resolvesThrough(target, from)) {
+                aliases.push(alias);
+            }
+        }
+        eventManager.emitTrees(
+            aliases.map((alias) => ({
+                path: alias,
+                value: readEventValue(resolvePath(alias)),
+                oldValue: readEventValue(resolveLinks(alias, oldLinks) ?? alias)
+            })),
+            "relink"
+        );
+
         return true;
+    }
+
+    /**
+     * Makes the path read-only: a write at or below it, direct or through an alias, returns false and emits nothing.
+     * Reads, links to the path and listeners are not affected. A write to a path above it is not refused.
+     * Returns false when the path is not valid.
+     * @param path
+     */
+    const protect = (path: string): boolean => {
+        if (typeof path !== "string") {
+            return false;
+        }
+        const protectedPath = normalizePath(path);
+        if (!validatePath(protectedPath)) {
+            return false;
+        }
+        protectedPaths.add(protectedPath);
+        return true;
+    }
+
+    /**
+     * Lifts the protection from the path. Returns false when the path was not protected.
+     * @param path
+     */
+    const unprotect = (path: string): boolean => {
+        return typeof path === "string" && protectedPaths.delete(normalizePath(path));
     }
 
     /**
@@ -948,6 +1101,8 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         replace,
         link,
         unlink,
+        protect,
+        unprotect,
         on: eventManager.addListener,
         off: eventManager.removeListener,
         state: createProxy<R>(state, "$")

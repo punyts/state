@@ -31,9 +31,59 @@ There is one kind of link, the alias. Every path at or below the alias path is t
 
 `link` returns `false` when it does nothing:
 
-- the target does not exist (the caller reports it as missing),
+- the target does not exist (the caller reports it as missing), unless `allowMissing` is set,
 - the target is the alias itself, inside it or above it, or the chain of links loops (the caller reports a cycle),
-- `fromPath` already is an alias, or already holds data in the state,
+- `fromPath` already holds data in the state,
 - a path is not valid, or `fromPath` is the root.
 
-Not carried over from statenet: its hard links and soft links. Only the alias above exists.
+### Re-pointing
+
+`link` on a path that already is an alias moves the alias to the new target. Record views recycle slots this way.
+
+```ts
+store.link('$.view.order', '$.data.orders.k43'); // true, $.view.order was an alias of $.data.orders.k42
+```
+
+- Every listener registered at or below the alias path is called once, in one pass, with the `relink` action, the alias
+  path, the value the alias shows now and the value it showed before. No listener is added or removed.
+- A link whose target is another alias follows it. Every alias that resolves through the re-pointed one is notified too
+  (a detail field linked to a list's `current`, or an alias linked to `$.slot.row.x` when `$.slot.row` is re-pointed).
+  A listener is called once per re-point, even when it is registered on several of those aliases.
+- The work does not depend on the size of the store: a re-point reads the old and the new target and each notified alias,
+  nothing else.
+- A re-point that is refused (`false`) leaves the alias as it was.
+
+### allowMissing
+
+`store.link(fromPath, toPath, { allowMissing: true })` accepts a target that does not exist yet, as long as the parent of
+the target exists and is an object or array. Without the option a missing target is refused.
+
+```ts
+store.link('$.view.x', '$.data.orders.k42.x', { allowMissing: true }); // true
+store.get('$.view.x');                                                 // undefined
+store.set('$.data.orders.k42.x', 1);                                   // the listeners of $.view.x are called
+```
+
+Reads give `undefined` while the target is missing. The listeners on the alias are called when the target appears,
+changes or goes, including when a path above it is replaced. A write through the alias creates the target.
+
+## Protecting paths
+
+`store.protect(path)` makes a path read-only and `store.unprotect(path)` lifts it. `protect` returns `false` for an
+invalid path, `unprotect` returns `false` when the path was not protected.
+
+```ts
+store.protect('$.runtime.empty');
+store.set('$.runtime.empty.x', 1);  // false, nothing is emitted
+store.link('$.view.form', '$.runtime.empty');
+store.set('$.view.form.x', 1);      // false, the alias leads to a protected path
+```
+
+- A write at or below a protected path returns `false` and emits nothing. This covers `set`, `apply`, `applyIf`,
+  `replace`, `delete` and assignment or `delete` through a proxy (the proxy ignores them, as it ignores any refused write).
+- A write through an alias to a protected path is refused the same way, however long the chain of aliases.
+- Reads, links to the path and listeners work as usual.
+- A write to a path above a protected path is not refused, so protect the paths that must not change and do not replace
+  their parents.
+
+Links: not carried over from statenet are its hard links and soft links. Only the alias exists.
