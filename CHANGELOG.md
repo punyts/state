@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- **Writes and links cost what they touch, not the size of the store.** Listener paths and link targets are kept in path indexes (`PathIndex`), so an emit finds the listeners at and below a path, the wildcards whose literal prefix leads to it, and the aliases whose target is at, below or above it, without visiting every listener and every link. Before, each write passed over every link (resolving each target) and each link or tree emit passed over every listener, so building many linked nodes grew with the square of the store. `link` no longer copies the link map. Listeners are still called in the order their paths were first listened to and aliases in the order they were made. A change now reaches an alias whose target leads through another alias by being passed on through that alias, as it already was for listeners below it.
 - **Re-pointing reaches listeners behind several aliases.** Re-pointing an alias now notifies every listener whose resolved path changed, once, at any depth and arrangement of aliases, including a listener below an alias that leads to another alias below the re-pointed one (for example a view alias over a holder whose child is linked through the re-pointed alias). A change at the new target reaches those listeners too.
 
 ## 1.2.0

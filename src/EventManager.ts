@@ -1,4 +1,5 @@
 import { report } from "@punyts/core";
+import { createPathIndex } from "./PathIndex.js";
 
 export type EventListenerFn = (path: string, value: any, oldValue: any, action: string) => void;
 
@@ -29,6 +30,44 @@ export const createEventManager = (): EventManager => {
 
     const listeners: Map<string, EventListenerFn[]> = new Map();
     const wildcards: Map<string, RegExp> = new Map();
+    //every listened path, so a tree emit visits only the paths at and below its targets
+    const keyIndex = createPathIndex<string>();
+    //each wildcard path under its literal prefix (the segments before the first wildcard), so an emit tests only the wildcards that can match
+    const wildcardIndex = createPathIndex<string>();
+    //the order paths were first listened to, which is the order their listeners are called in
+    const order: Map<string, number> = new Map();
+    let nextOrder = 0;
+
+    const byOrder = (a: string, b: string): number => order.get(a)! - order.get(b)!;
+
+    const literalPrefix = (path: string): string => {
+        const segments = path.split(".");
+        const first = segments.findIndex((segment) => PATT_HAS_WILDCARD.test(segment));
+        return segments.slice(0, first).join(".");
+    };
+
+    const removeKey = (path: string): void => {
+        listeners.delete(path);
+        order.delete(path);
+        keyIndex.remove(path, path);
+        if (wildcards.has(path)) {
+            wildcards.delete(path);
+            wildcardIndex.remove(literalPrefix(path), path);
+        }
+    };
+
+    /**
+     * The wildcard paths that may match the path, in the order they were first listened to: those whose literal prefix
+     * is the path or lies above it
+     */
+    const wildcardsFor = (path: string): string[] => {
+        if (wildcards.size === 0) {
+            return [];
+        }
+        const found = [...wildcardIndex.at(path), ...wildcardIndex.at("")];
+        for (const [, keys] of wildcardIndex.above(path)) found.push(...keys);
+        return [...new Set(found)].sort(byOrder);
+    };
 
     /**
      * Adds a listener for a specific path or wildcarded path.
@@ -48,17 +87,20 @@ export const createEventManager = (): EventManager => {
         for (let path of paths) {
             if (!listeners.has(path)) {
                 listeners.set(path, []);
+                order.set(path, nextOrder++);
+                keyIndex.add(path, path);
             }
             listeners.get(path)!.push(listener);
 
             //if there are wildcards then lets precompile the regexp
-            if (path.match(PATT_HAS_WILDCARD)) {
+            if (path.match(PATT_HAS_WILDCARD) && !wildcards.has(path)) {
                 const regExpPath = path
                     .replace(PATT_ALL_DOTS, "[.]")
                     .replace(PATT_ALL_EVERY, "(?:[^.]+)")
                     .replace(PATT_ALL_ALL, "(?:.+?)")
                     .replace(PATT_ALL_DOLLAR, "[$]");
                 wildcards.set(path, new RegExp(`^${regExpPath}$`));
+                wildcardIndex.add(literalPrefix(path), path);
             }
         }
     };
@@ -87,16 +129,12 @@ export const createEventManager = (): EventManager => {
                     }
                     //if this remove emptied the listeners for this path
                     if (pathListeners.length === 0) {
-                        listeners.delete(path);
-                        if (wildcards.has(path))
-                            wildcards.delete(path);
+                        removeKey(path);
                     }
                 }
                 //if we didn't pass a listener function then remove all listeners for this path
                 else {
-                    listeners.delete(path);
-                    if (wildcards.has(path))
-                        wildcards.delete(path);
+                    removeKey(path);
                 }
             }
         }
@@ -132,7 +170,8 @@ export const createEventManager = (): EventManager => {
             }
 
             // Emit for wildcard matches
-            [...wildcards].forEach(([key, regExp]) => {
+            wildcardsFor(path).forEach((key) => {
+                const regExp = wildcards.get(key)!;
                 if (key !== path && regExp.test(path)) {
                     ///LOGGING
                     report("event-emit-wildcard", "Emit event for %s using wildcard %s", [path, regExp.toString()]);
@@ -176,13 +215,21 @@ export const createEventManager = (): EventManager => {
 
         const calledListeners = new Set<EventListenerFn>();
 
-        [...listeners].forEach(([key, pathListeners]) => {
-            const target = targets.find(({ path }) => key === path
-                || key.startsWith(`${path}.`)
-                || (wildcards.get(key)?.test(path) ?? false));
-            if (!target) {
-                return;
+        //each listened path takes the first target that reaches it: one at or above the path, or one its wildcard matches
+        const reached = new Map<string, EventTreeTarget>();
+        for (const target of targets) {
+            for (const key of keyIndex.atOrBelow(target.path)) {
+                if (!reached.has(key)) reached.set(key, target);
             }
+            for (const key of wildcardsFor(target.path)) {
+                if (!reached.has(key) && wildcards.get(key)!.test(target.path)) reached.set(key, target);
+            }
+        }
+
+        //the listener lists are taken before any is called, as a callback may remove a path
+        const lists = [...reached.keys()].sort(byOrder).map((key) => [key, listeners.get(key)!] as const);
+        lists.forEach(([key, pathListeners]) => {
+            const target = reached.get(key)!;
             [...pathListeners].forEach((listener) => {
                 if (!calledListeners.has(listener)) {
                     callListener(listener, target.path, target.value, target.oldValue, action);

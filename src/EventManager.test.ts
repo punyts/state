@@ -220,4 +220,65 @@ describe('EventManager', () => {
             expect(wildcardListener).not.toHaveBeenCalled();
         });
     });
+
+    describe('indexed lookups', () => {
+        it('should call tree listeners in the order their paths were first listened to', () => {
+            // Arrange
+            const calls: string[] = [];
+            eventManager.addListener('$.a.z', () => calls.push('z'));
+            eventManager.addListener('$.a', () => calls.push('a'));
+            eventManager.addListener('$.a.$every', () => calls.push('every'));
+            eventManager.addListener('$.a.b', () => calls.push('b'));
+            eventManager.addListener('$.other', () => calls.push('other'));
+
+            // Act
+            eventManager.emitTree('$.a', 1, 0, 'relink');
+
+            // Assert
+            expect(calls).toEqual(['z', 'a', 'every', 'b']);
+        });
+
+        it('should give each tree listener the first target that reaches it, a wildcard included', () => {
+            // Arrange
+            const listener: EventListenerFn = vi.fn();
+            eventManager.addListener('$.list.$every.name', listener);
+
+            // Act
+            eventManager.emitTrees([{ path: '$.list.2.name', value: 'b', oldValue: 'a' }, { path: '$.list', value: [], oldValue: [] }], 'relink');
+
+            // Assert
+            expect(listener).toHaveBeenCalledTimes(1);
+            expect(listener).toHaveBeenCalledWith('$.list.2.name', 'b', 'a', 'relink');
+        });
+
+        it('should match a wildcard that has no literal prefix and stop after it is removed', () => {
+            // Arrange
+            const listener: EventListenerFn = vi.fn();
+            eventManager.addListener('$all.name', listener);
+
+            // Act
+            eventManager.emit('$.people.0.name', 'x', 'y', 'update');
+            eventManager.removeListener('$all.name', listener);
+            eventManager.emit('$.people.0.name', 'z', 'x', 'update');
+
+            // Assert
+            expect(listener).toHaveBeenCalledTimes(1);
+        });
+
+        it('should order a wildcard listened to again after its listeners were removed as a new path', () => {
+            // Arrange
+            const calls: string[] = [];
+            const first = (): void => { calls.push('first'); };
+            eventManager.addListener('$.a.$every', first);
+            eventManager.addListener('$.a.$all', () => calls.push('all'));
+            eventManager.removeListener('$.a.$every', first);
+            eventManager.addListener('$.a.$every', () => calls.push('again'));
+
+            // Act
+            eventManager.emit('$.a.b', 1, 0, 'update');
+
+            // Assert
+            expect(calls).toEqual(['all', 'again']);
+        });
+    });
 });

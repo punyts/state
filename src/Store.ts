@@ -1,6 +1,7 @@
 import { report, getType } from '@punyts/core';
 import { applyToState, applyToStateIf, replaceState } from './ApplyState.js';
 import { createEventManager, EventManager, EventListenerFn } from './EventManager.js';
+import { createPathIndex } from './PathIndex.js';
 import { ProxyObject as ProxyObjectType, getRawType } from './Types.js';
 
 const PATT_STATE_PATH = /^(?:(?:[0-z$\-_]+)(?:[.](?!$)|$))+$/;
@@ -169,6 +170,50 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     //alias path -> target path, both "$."-prefixed. Links are runtime structure of the store, never part of the state data;
     //the target is kept as given and resolved on every access, so an alias whose target is itself an alias follows it
     const links: Map<string, string> = new Map();
+    //each alias filed under its target as given, so a change finds the aliases at, below or above it without visiting the rest
+    const linkTargets = createPathIndex<string>();
+    //the order aliases were made, which is the order their listeners hear a change in; a re-point keeps the place
+    const linkOrder: Map<string, number> = new Map();
+    let nextLinkOrder = 0;
+
+    const byLinkOrder = (a: string, b: string): number => linkOrder.get(a)! - linkOrder.get(b)!;
+
+    /** Makes or re-points the alias in the link map and its indexes */
+    const setLink = (from: string, to: string): void => {
+        const previous = links.get(from);
+        if (previous !== undefined) {
+            linkTargets.remove(previous, from);
+        }
+        else {
+            linkOrder.set(from, nextLinkOrder++);
+        }
+        links.set(from, to);
+        linkTargets.add(to, from);
+    }
+
+    /** Removes the alias from the link map and its indexes; false when it is not an alias */
+    const removeLink = (from: string): boolean => {
+        const previous = links.get(from);
+        if (previous === undefined) {
+            return false;
+        }
+        links.delete(from);
+        linkOrder.delete(from);
+        linkTargets.remove(previous, from);
+        return true;
+    }
+
+    /**
+     * The aliases whose target, as given, is the path, lies below it or lies above it, each with that target, in the
+     * order the aliases were made
+     */
+    const linksAround = (path: string): [string, string][] => {
+        const found = new Set(linkTargets.atOrBelow(path));
+        for (const [, aliases] of linkTargets.above(path)) {
+            for (const alias of aliases) found.add(alias);
+        }
+        return [...found].sort(byLinkOrder).map((alias) => [alias, links.get(alias)!]);
+    }
     //maps each proxy this store hands out to the raw object it wraps
     const proxyTargets: WeakMap<object, any> = new WeakMap();
     //read-only paths, "$."-prefixed; a write at or below one is refused
@@ -239,54 +284,29 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     }
 
     /**
-     * The path and every path it leads to while links are followed, ending at the resolved path
-     * @param path - a "$."-prefixed path
-     */
-    const linkChain = (path: string): string[] => {
-        const chain = [path];
-        let current = path;
-        for (let hops = 0; hops <= links.size; hops++) {
-            const next = followLink(current, links);
-            if (next === undefined) {
-                break;
-            }
-            chain.push(next);
-            current = next;
-        }
-        return chain;
-    }
-
-    /**
      * Every path whose resolved path changes when the alias is re-pointed, as the roots of the trees to notify:
-     * the alias itself, each alias whose target leads through a root, and each path below an alias whose target
-     * leads to a path above a root (the alias path followed by the rest of the root path).
-     * Repeated until no root is added, which covers any depth and arrangement of aliases.
+     * the alias itself, each alias whose target is at or below a root, and each path below an alias whose target is
+     * above a root (the alias path followed by the rest of the root path).
+     * Each root found is looked up in turn, so an alias whose target leads through another alias is reached through
+     * that alias's root, which covers any depth and arrangement of aliases.
      * @param alias - the re-pointed alias path
      */
     const repointedPaths = (alias: string): string[] => {
-        const roots = new Set<string>([alias]);
-        for (let added = true; added;) {
-            added = false;
-            for (const [from, target] of links) {
-                const chain = linkChain(target);
-                for (const root of [...roots]) {
-                    for (const hop of chain) {
-                        let reached: string | undefined;
-                        if (hop === root || hop.startsWith(`${root}.`)) {
-                            reached = from;
-                        }
-                        else if (root.startsWith(`${hop}.`)) {
-                            reached = `${from}${root.slice(hop.length)}`;
-                        }
-                        if (reached !== undefined && !roots.has(reached)) {
-                            roots.add(reached);
-                            added = true;
-                        }
-                    }
+        const roots = [alias];
+        const seen = new Set<string>(roots);
+        for (let i = 0; i < roots.length; i++) {
+            const root = roots[i]!;
+            for (const [from, target] of linksAround(root)) {
+                const reached = target === root || target.startsWith(`${root}.`)
+                    ? from
+                    : `${from}${root.slice(target.length)}`;
+                if (!seen.has(reached)) {
+                    seen.add(reached);
+                    roots.push(reached);
                 }
             }
         }
-        return [...roots];
+        return roots;
     }
 
     /**
@@ -332,23 +352,23 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         }
 
         const emitted = new Set<string>();
+        //only the targets as given are looked up: a target that leads through another alias is reached when the change
+        //is passed on to that alias's path
         const spread = (changed: string): void => {
-            for (const [from, to] of [...links]) {
-                for (const target of new Set([resolvePath(to), to])) {
-                    if (changed === target || (target.startsWith(`${changed}.`) && !action.endsWith("-child"))) {
-                        if (!emitted.has(`tree:${from}`)) {
-                            emitted.add(`tree:${from}`);
-                            eventManager.emitTree(from, value, oldValue, action);
-                            spread(from);
-                        }
+            for (const [from, target] of linksAround(changed)) {
+                if (changed === target || (target.startsWith(`${changed}.`) && !action.endsWith("-child"))) {
+                    if (!emitted.has(`tree:${from}`)) {
+                        emitted.add(`tree:${from}`);
+                        eventManager.emitTree(from, value, oldValue, action);
+                        spread(from);
                     }
-                    else if (changed.startsWith(`${target}.`)) {
-                        const mapped = `${from}${changed.slice(target.length)}`;
-                        if (!emitted.has(mapped)) {
-                            emitted.add(mapped);
-                            eventManager.emit(mapped, value, oldValue, action);
-                            spread(mapped);
-                        }
+                }
+                else if (changed.startsWith(`${target}.`)) {
+                    const mapped = `${from}${changed.slice(target.length)}`;
+                    if (!emitted.has(mapped)) {
+                        emitted.add(mapped);
+                        eventManager.emit(mapped, value, oldValue, action);
+                        spread(mapped);
                     }
                 }
             }
@@ -998,7 +1018,16 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         }
 
         //an alias whose chain returns to itself, or that holds or is held by its own target, would never settle
-        const resolvedTarget = resolveLinks(to, new Map(links).set(from, to));
+        //tried in the link map itself, put back at once, rather than in a copy of every link
+        const previous = links.get(from);
+        links.set(from, to);
+        const resolvedTarget = resolveLinks(to);
+        if (previous === undefined) {
+            links.delete(from);
+        }
+        else {
+            links.set(from, previous);
+        }
         if (
             resolvedTarget === undefined
             || resolvedTarget === from
@@ -1019,20 +1048,21 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return false;
         }
 
+        setLink(from, to);
         if (!repoint) {
-            links.set(from, to);
             return true;
         }
 
-        const oldLinks = new Map(links);
-        links.set(from, to);
-
         const aliases = repointedPaths(from);
+        //what each alias showed is read with the old target back in the link map
+        links.set(from, previous!);
+        const oldValues = aliases.map((alias) => readEventValue(resolvePath(alias)));
+        links.set(from, to);
         eventManager.emitTrees(
-            aliases.map((alias) => ({
+            aliases.map((alias, i) => ({
                 path: alias,
                 value: readEventValue(resolvePath(alias)),
-                oldValue: readEventValue(resolveLinks(alias, oldLinks) ?? alias)
+                oldValue: oldValues[i]
             })),
             "relink"
         );
@@ -1072,7 +1102,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param fromPath
      */
     const unlink = (fromPath: string): boolean => {
-        return typeof fromPath === "string" && links.delete(normalizePath(fromPath));
+        return typeof fromPath === "string" && removeLink(normalizePath(fromPath));
     }
 
     /**
