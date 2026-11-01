@@ -374,6 +374,22 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     }
 
     /**
+     * The value at the segments below a value, or undefined where a step is missing
+     * @param value
+     * @param segments
+     */
+    const pick = (value: any, segments: readonly string[]): any => {
+        let current = value;
+        for (const segment of segments) {
+            if (current === null || typeof current !== "object") {
+                return undefined;
+            }
+            current = current[segment];
+        }
+        return current;
+    }
+
+    /**
      * Emits the change at path, then tells the listeners of every alias that shows the changed value.
      * A change at or above the alias target reaches the alias path and everything listening below it with the alias
      * path in the event; a change inside the target reaches the mapped path below the alias.
@@ -408,7 +424,10 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 else if (changed === target || (target.startsWith(`${changed}.`) && !action.endsWith("-child"))) {
                     if (!emitted.has(`tree:${from}`)) {
                         emitted.add(`tree:${from}`);
-                        eventManager.emitTree(from, value, oldValue, action);
+                        //a change above the target hands the alias what it shows: the values at the target's place in the
+                        //changed values, not the whole object of the path that changed
+                        const rest = changed === target ? [] : target.slice(changed.length + 1).split(".");
+                        eventManager.emitTree(from, pick(value, rest), pick(oldValue, rest), action);
                         spread(from);
                     }
                 }

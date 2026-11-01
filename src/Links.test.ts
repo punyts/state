@@ -206,6 +206,17 @@ describe('Store links', () => {
             expect(listener).toHaveBeenCalledWith('$.view.field', 'Grace', 'Ada', 'update');
         });
 
+        it('should hand the alias the values at its target when a path above the target is replaced', () => {
+            store.link('$.view.city', '$.data.orders.k42.address.city');
+            const listener = vi.fn();
+            store.on('$.view.city', listener);
+
+            store.replace('$.data.orders.k42', { total: 11, address: { city: 'Bergen' } });
+
+            expect(listener).toHaveBeenCalled();
+            expect(listener).toHaveBeenLastCalledWith('$.view.city', 'Bergen', 'Oslo', 'replace');
+        });
+
         it('should fire a listener on the target once', () => {
             store.link('$.view.field', '$.data.name');
             const targetListener = vi.fn();
