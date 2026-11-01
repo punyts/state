@@ -108,9 +108,17 @@ const cloneValue = <T>(value: T, seen: WeakMap<object, any> = new WeakMap()): T 
 // getRawType is now imported from Types.ts and re-exported
 export { getRawType } from './Types.js';
 
+const OBJECT_TAG = "[object Object]";
+
+/**
+ * True for an array or a generic object, a proxy of either included: the values the store walks into and wraps.
+ * Runs on every read, so it compares the tag rather than building the type name (a proxy reports its target's tag)
+ * @param value
+ */
 const isComposite = (value: any) => {
-    const type = getRawType(value);
-    return type === "object" || type === "array";
+    return value !== null
+        && typeof value === "object"
+        && (Array.isArray(value) || Object.prototype.toString.call(value) === OBJECT_TAG);
 };
 
 /**
@@ -170,6 +178,17 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     //alias path -> target path, both "$."-prefixed. Links are runtime structure of the store, never part of the state data;
     //the target is kept as given and resolved on every access, so an alias whose target is itself an alias follows it
     const links: Map<string, string> = new Map();
+    //path -> the path with every link followed, for the paths read since the links last changed; every change to the link
+    //map clears it, as one link can change what any path resolves to
+    const resolved: Map<string, string> = new Map();
+    const MAX_RESOLVED = 20_000;
+    //path as read -> the segments of the path it resolves to, so a repeated read neither follows links nor splits again;
+    //cleared with the resolved paths
+    const segmentsRead: Map<string, readonly string[]> = new Map();
+    const forgetResolved = (): void => {
+        resolved.clear();
+        segmentsRead.clear();
+    }
     //each alias filed under its target as given, so a change finds the aliases at, below or above it without visiting the rest
     const linkTargets = createPathIndex<string>();
     //the order aliases were made, which is the order their listeners hear a change in; a re-point keeps the place
@@ -188,6 +207,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             linkOrder.set(from, nextLinkOrder++);
         }
         links.set(from, to);
+        forgetResolved();
         linkTargets.add(to, from);
     }
 
@@ -198,6 +218,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return false;
         }
         links.delete(from);
+        forgetResolved();
         linkOrder.delete(from);
         linkTargets.remove(previous, from);
         return true;
@@ -214,8 +235,12 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         }
         return [...found].sort(byLinkOrder).map((alias) => [alias, links.get(alias)!]);
     }
-    //maps each proxy this store hands out to the raw object it wraps
-    const proxyTargets: WeakMap<object, any> = new WeakMap();
+    //a proxy this store hands out answers this key with the raw object it wraps; a proxy of another store does not know it
+    const RAW_TARGET = Symbol("raw target");
+    //the proxy handler of each base path: a proxy's behaviour depends only on its base path, so the handler and its traps
+    //are made once per path rather than once per read
+    const proxyHandlers: Map<string, ProxyHandler<any>> = new Map();
+    const MAX_HANDLERS = 20_000;
     //read-only paths, "$."-prefixed; a write at or below one is refused
     const protectedPaths: Set<string> = new Set();
 
@@ -328,18 +353,33 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     }
 
     /**
-     * The path with every link followed; a path that cannot be resolved is returned as it is
+     * The path with every link followed; a path that cannot be resolved is returned as it is.
+     * Remembered until the links change, as the same paths are read over and over between link changes
      * @param path - a "$."-prefixed path
      */
     const resolvePath = (path: string): string => {
-        return resolveLinks(path) ?? path;
+        if (links.size === 0) {
+            return path;
+        }
+        const known = resolved.get(path);
+        if (known !== undefined) {
+            return known;
+        }
+        const next = resolveLinks(path) ?? path;
+        if (resolved.size >= MAX_RESOLVED) {
+            resolved.clear();
+        }
+        resolved.set(path, next);
+        return next;
     }
 
     /**
      * Emits the change at path, then tells the listeners of every alias that shows the changed value.
      * A change at or above the alias target reaches the alias path and everything listening below it with the alias
      * path in the event; a change inside the target reaches the mapped path below the alias.
-     * Changes to the children of a path above the target leave the target alone and are not passed on.
+     * A child change at the target ("insert-child", "update-child", "delete-child") reaches the alias path only, as it
+     * reaches only the target path's own listeners. Changes to the children of a path above the target leave the
+     * target alone and are not passed on.
      * An alias path is itself a path other aliases can lead to, so each alias event is passed on the same way, which
      * reaches listeners below an alias that leads to another alias. Every event is emitted once.
      * @param path - the resolved path that changed
@@ -356,7 +396,16 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         //is passed on to that alias's path
         const spread = (changed: string): void => {
             for (const [from, target] of linksAround(changed)) {
-                if (changed === target || (target.startsWith(`${changed}.`) && !action.endsWith("-child"))) {
+                //a child of the target was added, changed in place or removed: the target keeps its value, so the alias
+                //path hears the event as the target path does, and the child's own event reaches the path below the alias
+                if (changed === target && action.endsWith("-child")) {
+                    if (!emitted.has(from)) {
+                        emitted.add(from);
+                        eventManager.emit(from, value, oldValue, action);
+                        spread(from);
+                    }
+                }
+                else if (changed === target || (target.startsWith(`${changed}.`) && !action.endsWith("-child"))) {
                     if (!emitted.has(`tree:${from}`)) {
                         emitted.add(`tree:${from}`);
                         eventManager.emitTree(from, value, oldValue, action);
@@ -408,8 +457,9 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         if (value && typeof value === "object") {
             //proxies from this store unwrap to their actual target; resolving by path is wrong mid-reorder
             //(e.g. reverse/sort/shift), when the path may already hold a different element
-            if (proxyTargets.has(value)) {
-                return proxyTargets.get(value);
+            const raw = value[RAW_TARGET];
+            if (raw !== undefined) {
+                return raw;
             }
             if (value.__isProxy) {
                 return getStateByPath(value.__path);
@@ -434,16 +484,14 @@ export const createStore = <R>(initialState?: R): Store<R> => {
             return { parent: { $: state }, index: "$", value: state, found: true };;
         }
 
-        //follow links so every read lands on the target
-        if (links.size > 0) {
-            path = resolvePath(normalizePath(path));
+        //follow links so every read lands on the target, then split without the leading "$."
+        let segments = segmentsRead.get(path);
+        if (segments === undefined) {
+            const target = links.size > 0 ? resolvePath(normalizePath(path)) : path;
+            segments = (target.startsWith('$.') ? target.slice(2) : target).split('.');
+            if (segmentsRead.size >= MAX_RESOLVED) segmentsRead.clear();
+            segmentsRead.set(path, segments);
         }
-
-        // Normalize the path to remove leading "$." if present
-        const normalizedPath = path.startsWith('$.') ? path.slice(2) : path;
-
-        // Split the path into segments
-        const segments = normalizedPath.split('.');
 
         // Traverse the state object to the second-to-last segment
         let current: any = state;
@@ -454,10 +502,12 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         for (let i = 0; i < len; i++) {
             const segment = segments[i];
 
-            if (current !== null && typeof current === "object" && segment in current) {
+            //one lookup per segment; "in" only tells a missing key from a key holding undefined
+            const next = current !== null && typeof current === "object" ? current[segment] : undefined;
+            if (next !== undefined || (current !== null && typeof current === "object" && segment in current)) {
                 parent = current;
                 index = segment;
-                current = current[segment];
+                current = next;
             }
             else {
                 // If the path does not exist, return a not found indicator
@@ -803,25 +853,44 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @returns
      */
     const createProxy = <T>(target: any, basePath: string): T & ProxyObject => {
-        const proxy = new Proxy(target, {
+        let handler = proxyHandlers.get(basePath);
+        if (!handler) {
+            if (proxyHandlers.size >= MAX_HANDLERS) {
+                proxyHandlers.clear();
+            }
+            handler = createProxyHandler<T>(basePath);
+            proxyHandlers.set(basePath, handler);
+        }
+        return new Proxy(target, handler);
+    };
+
+    /**
+     * The traps of a proxy at base path
+     * @param basePath
+     */
+    const createProxyHandler = <T>(basePath: string): ProxyHandler<any> => {
+        return {
             get(obj, propName) {
+                if (propName === RAW_TARGET) {
+                    return obj;
+                }
                 //we don't support symbols
                 if (typeof propName !== 'string') {
                     return obj[propName];
                 }
 
-                const fullPath = `${basePath}.${propName}`;
                 //if the property is in the target then use that
                 if (propName in obj) {
                     const value = obj[propName];
                     //for generic arrays and objects create a proxy (skips things like elements)
                     if (isComposite(value)) {
-                        return createProxy<T>(value, fullPath);
+                        return createProxy<T>(value, `${basePath}.${propName}`);
                     }
                     return value;
                 }
                 //a property that is an alias shows the value of its target
                 if (links.size > 0) {
+                    const fullPath = `${basePath}.${propName}`;
                     const linked = getStateRef(fullPath);
                     if (linked.found) {
                         return isComposite(linked.value)
@@ -884,9 +953,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
 
                 return deleteStateByPath(basePath, propName, true);
             }
-        });
-        proxyTargets.set(proxy, target);
-        return proxy;
+        };
     };
 
     /**
@@ -1021,12 +1088,15 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         //tried in the link map itself, put back at once, rather than in a copy of every link
         const previous = links.get(from);
         links.set(from, to);
+        forgetResolved();
         const resolvedTarget = resolveLinks(to);
         if (previous === undefined) {
             links.delete(from);
+            forgetResolved();
         }
         else {
             links.set(from, previous);
+            forgetResolved();
         }
         if (
             resolvedTarget === undefined
@@ -1056,8 +1126,10 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         const aliases = repointedPaths(from);
         //what each alias showed is read with the old target back in the link map
         links.set(from, previous!);
+        forgetResolved();
         const oldValues = aliases.map((alias) => readEventValue(resolvePath(alias)));
         links.set(from, to);
+        forgetResolved();
         eventManager.emitTrees(
             aliases.map((alias, i) => ({
                 path: alias,

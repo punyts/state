@@ -317,6 +317,45 @@ describe('Store links', () => {
             expect(listener).toHaveBeenCalledTimes(1);
             expect(listener.mock.calls[0][0]).toBe('$.view.order.total');
         });
+
+        it('should pass a child added to the target to the alias path and the new child only, not to its siblings', () => {
+            // Arrange
+            store.link('$.view.orders', '$.data.orders');
+            const atAlias = vi.fn();
+            const sibling = vi.fn();
+            const added = vi.fn();
+            store.on('$.view.orders', atAlias);
+            store.on('$.view.orders.k42.total', sibling);
+            store.on('$.view.orders.k44', added);
+
+            // Act
+            store.set('$.data.orders.k44', { total: 30 });
+
+            // Assert
+            expect(atAlias).toHaveBeenCalledTimes(1);
+            expect(atAlias.mock.calls[0][0]).toBe('$.view.orders');
+            expect(atAlias.mock.calls[0][3]).toBe('insert-child');
+            expect(added).toHaveBeenCalledTimes(1);
+            expect(added.mock.calls[0][3]).toBe('insert');
+            expect(sibling).not.toHaveBeenCalled();
+        });
+
+        it('should pass a removed child of the target to the alias path without its siblings', () => {
+            // Arrange
+            store.link('$.view.orders', '$.data.orders');
+            const atAlias = vi.fn();
+            const sibling = vi.fn();
+            store.on('$.view.orders', atAlias);
+            store.on('$.view.orders.k42.total', sibling);
+
+            // Act
+            store.delete('$.data.orders.k43');
+
+            // Assert
+            expect(atAlias).toHaveBeenCalledTimes(1);
+            expect(atAlias.mock.calls[0][3]).toBe('delete-child');
+            expect(sibling).not.toHaveBeenCalled();
+        });
     });
 
     describe('unlink', () => {
