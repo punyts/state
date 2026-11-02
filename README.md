@@ -28,6 +28,8 @@ There is one kind of link, the alias. Every path at or below the alias path is t
 - Links are runtime structure, not state data. An alias path holds nothing in the state, so `store.get('$')` contains
   the target data once, at the target path, and nothing under the alias.
 - `unlink` stops both directions. Listeners registered on the alias path stay registered; remove them with `off`.
+- `store.resolve(path)` gives the path with every link followed (`$.view.order.total` → `$.data.orders.k42.total`), and
+  the path itself when no alias is in it.
 
 `link` returns `false` when it does nothing:
 

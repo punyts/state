@@ -425,6 +425,23 @@ describe('Store links', () => {
         });
     });
 
+    describe('resolve', () => {
+        it('should follow the links of a path at or below an alias', () => {
+            store.link('$.view.order', '$.data.orders.k42');
+            store.link('$.view.current', '$.view.order');
+
+            expect(store.resolve('$.view.order')).toBe('$.data.orders.k42');
+            expect(store.resolve('$.view.current.address.city')).toBe('$.data.orders.k42.address.city');
+        });
+
+        it('should return a path without an alias as it is, prefixed with $.', () => {
+            store.link('$.view.order', '$.data.orders.k42');
+
+            expect(store.resolve('$.data.orders.k42.total')).toBe('$.data.orders.k42.total');
+            expect(store.resolve('data.name')).toBe('$.data.name');
+        });
+    });
+
     describe('snapshot', () => {
         it('should hold the target data once and nothing under the alias', () => {
             store.link('$.view.order', '$.data.orders.k42');

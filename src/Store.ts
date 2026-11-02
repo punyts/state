@@ -34,6 +34,8 @@ export interface Store<R> {
     replace: (path: string, source: any, options?: WriteOptions) => void;
     link: (fromPath: string, toPath: string, options?: LinkOptions) => boolean;
     unlink: (fromPath: string) => boolean;
+    /** The "$."-prefixed path with every link followed; the path itself when no alias is in it */
+    resolve: (path: string) => string;
     protect: (path: string) => boolean;
     unprotect: (path: string) => boolean;
     state: R;
@@ -1315,6 +1317,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         replace,
         link,
         unlink,
+        resolve: (path: string) => resolvePath(normalizePath(path)),
         protect,
         unprotect,
         on: eventManager.addListener,
