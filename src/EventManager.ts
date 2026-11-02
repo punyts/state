@@ -1,7 +1,11 @@
 import { report } from "@punyts/core";
 import { createPathIndex } from "./PathIndex.js";
 
-export type EventListenerFn = (path: string, value: any, oldValue: any, action: string) => void;
+/**
+ * A change listener. origin is the tag the write was made with (WriteOptions in the store), undefined for an untagged
+ * write
+ */
+export type EventListenerFn = (path: string, value: any, oldValue: any, action: string, origin?: string) => void;
 
 const PATT_HAS_WILDCARD = /[$]all|[$]every/;
 const PATT_ALL_DOTS = /[.]/g;
@@ -18,9 +22,9 @@ export interface EventTreeTarget {
 export interface EventManager {
     addListener: (path: string | string[], listener: EventListenerFn) => void;
     removeListener: (path: string | string[], listener?: EventListenerFn) => void;
-    emit: (path: string | string[], value: any, oldValue: any, action: string) => void;
-    emitTree: (path: string, value: any, oldValue: any, action: string) => void;
-    emitTrees: (targets: EventTreeTarget[], action: string) => void;
+    emit: (path: string | string[], value: any, oldValue: any, action: string, origin?: string) => void;
+    emitTree: (path: string, value: any, oldValue: any, action: string, origin?: string) => void;
+    emitTrees: (targets: EventTreeTarget[], action: string, origin?: string) => void;
 }
 
 export const createEventManager = (): EventManager => {
@@ -144,8 +148,9 @@ export const createEventManager = (): EventManager => {
      * Emits an event for a specific path, invoking all matching listeners.
      * @param path The path to emit the event for.
      * @param args The arguments to pass to the listeners.
+     * @param origin The tag of the write, passed to every listener.
      */
-    const emit = (paths: string | string[], newState: any, oldState: any, action: string): void => {
+    const emit = (paths: string | string[], newState: any, oldState: any, action: string, origin?: string): void => {
         ///LOGGING
         report("event-emit", "Emit event for %s to %", [paths, action]);
         ///END LOGGING
@@ -163,7 +168,7 @@ export const createEventManager = (): EventManager => {
             if (listeners.has(path)) {
                 [...listeners.get(path)!].forEach((listener) => {
                     if (!calledListeners.has(listener)) {
-                        callListener(listener, path, newState, oldState, action);
+                        callListener(listener, path, newState, oldState, action, origin);
                         calledListeners.add(listener);
                     }
                 });
@@ -183,7 +188,7 @@ export const createEventManager = (): EventManager => {
                     }
                     [...pathListeners].forEach((listener) => {
                         if (!calledListeners.has(listener)) {
-                            callListener(listener, path, newState, oldState, action);
+                            callListener(listener, path, newState, oldState, action, origin);
                             calledListeners.add(listener);
                         }
                     });
@@ -197,8 +202,8 @@ export const createEventManager = (): EventManager => {
      * Used to tell the listeners of a link alias that the value behind the alias changed.
      * @param path The path whose listeners, and the listeners below it, are called.
      */
-    const emitTree = (path: string, newState: any, oldState: any, action: string): void => {
-        emitTrees([{ path, value: newState, oldValue: oldState }], action);
+    const emitTree = (path: string, newState: any, oldState: any, action: string, origin?: string): void => {
+        emitTrees([{ path, value: newState, oldValue: oldState }], action, origin);
     };
 
     /**
@@ -207,8 +212,9 @@ export const createEventManager = (): EventManager => {
      * Used when a re-pointed alias changes what several aliases show at once.
      * @param targets The paths to notify, with the value each one shows now and showed before.
      * @param action The action to report.
+     * @param origin The tag of the write, passed to every listener.
      */
-    const emitTrees = (targets: EventTreeTarget[], action: string): void => {
+    const emitTrees = (targets: EventTreeTarget[], action: string, origin?: string): void => {
         ///LOGGING
         report("event-emit", "Emit tree event for %s to %", [targets.map((target) => target.path), action]);
         ///END LOGGING
@@ -232,7 +238,7 @@ export const createEventManager = (): EventManager => {
             const target = reached.get(key)!;
             [...pathListeners].forEach((listener) => {
                 if (!calledListeners.has(listener)) {
-                    callListener(listener, target.path, target.value, target.oldValue, action);
+                    callListener(listener, target.path, target.value, target.oldValue, action, origin);
                     calledListeners.add(listener);
                 }
             });
@@ -244,13 +250,19 @@ export const createEventManager = (): EventManager => {
      * @param listener
      * @param args
      */
-    const callListener = (listener: EventListenerFn, path: string, newState: any, oldState: any, action: string) => {
+    const callListener = (listener: EventListenerFn, path: string, newState: any, oldState: any, action: string, origin?: string) => {
         ///LOGGING
         report("event-call", "Calling event handler for %s to %s", [path, action]);
         ///END LOGGING
 
         try {
-            listener(path, newState, oldState, action);
+            //an untagged write calls the listener with the four arguments it always had
+            if (origin === undefined) {
+                listener(path, newState, oldState, action);
+            }
+            else {
+                listener(path, newState, oldState, action, origin);
+            }
         }
         catch (error) {
             report.error(error as Error);

@@ -87,4 +87,24 @@ store.set('$.view.form.x', 1);      // false, the alias leads to a protected pat
 - A write to a path above a protected path is not refused, so protect the paths that must not change and do not replace
   their parents.
 
+## Write origin
+
+A write can carry a tag, its origin, which its listeners receive as a fifth argument. State sync uses it to tell a
+server's changes, which must not be sent back, from the user's own.
+
+```ts
+store.on('$.data.$all', (path, value, oldValue, action, origin) => {
+    if (origin !== 'sync') send(path, value);           // only the local changes leave
+});
+store.set('$.data.total', 12, { origin: 'sync' });      // the listener hears origin 'sync'
+store.set('$.data.total', 13);                          // the listener hears no origin
+```
+
+- `set`, `delete`, `apply`, `applyIf` and `replace` take `{ origin }` as their last argument; `link` takes `origin` in
+  its options, for the `relink` events of a re-point.
+- Every event of the write carries the origin: the per-key events of a merge, the `insert-child`, `update-child` and
+  `delete-child` events of the parent, and the events passed on to aliases.
+- A write a listener makes while it is called is its own: it carries no origin unless it passes one.
+- An untagged write calls listeners with four arguments, as before. Assignment through a proxy is untagged.
+
 Links: not carried over from statenet are its hard links and soft links. Only the alias exists.

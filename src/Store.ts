@@ -7,22 +7,31 @@ import { ProxyObject as ProxyObjectType, getRawType } from './Types.js';
 const PATT_STATE_PATH = /^(?:(?:[0-z$\-_]+)(?:[.](?!$)|$))+$/;
 const PATT_LEADING_DOTS = /^([.]+)(.*)/;
 
-export interface LinkOptions {
+export interface WriteOptions {
+    /**
+     * A tag for the write, such as "sync" for a change that came from a server. Every change event the write emits,
+     * those passed on to aliases included, gives it to the listeners as their origin argument. A write a listener makes
+     * while it is called is its own and is not tagged
+     */
+    origin?: string;
+}
+
+export interface LinkOptions extends WriteOptions {
     /** accept a target that does not exist yet, as long as its parent does */
     allowMissing?: boolean;
 }
 
 export interface Store<R> {
     get: <T = any>(path: string) => T & ProxyObjectType;
-    set: <T = any>(path: string, value: Partial<T>) => boolean;
-    delete: (path: string) => boolean;
+    set: <T = any>(path: string, value: Partial<T>, options?: WriteOptions) => boolean;
+    delete: (path: string, options?: WriteOptions) => boolean;
     on: (path: string | string[], listener: EventListenerFn) => void;
     off: (path: string | string[], listener?: EventListenerFn) => void;
     keys: <T = any>(path: string) => (string | number | Symbol)[];
-    apply: (path: string, source: any) => void;
-    applyIf: (path: string, source: any) => void;
+    apply: (path: string, source: any, options?: WriteOptions) => void;
+    applyIf: (path: string, source: any, options?: WriteOptions) => void;
     isRefMatch: (path: string, source: any) => boolean;
-    replace: (path: string, source: any) => void;
+    replace: (path: string, source: any, options?: WriteOptions) => void;
     link: (fromPath: string, toPath: string, options?: LinkOptions) => boolean;
     unlink: (fromPath: string) => boolean;
     protect: (path: string) => boolean;
@@ -243,6 +252,40 @@ export const createStore = <R>(initialState?: R): Store<R> => {
     const MAX_HANDLERS = 20_000;
     //read-only paths, "$."-prefixed; a write at or below one is refused
     const protectedPaths: Set<string> = new Set();
+    //the origin of the write in progress, given to the listeners of every event it emits; cleared while they run
+    let writeOrigin: string | undefined;
+
+    /**
+     * Runs the write with its origin, and puts back the origin of an enclosing write afterwards, also when it throws
+     * @param options - the write options of the call
+     * @param write
+     */
+    const withOrigin = <T>(options: WriteOptions | undefined, write: () => T): T => {
+        const previous = writeOrigin;
+        writeOrigin = options?.origin;
+        try {
+            return write();
+        }
+        finally {
+            writeOrigin = previous;
+        }
+    }
+
+    /**
+     * Calls the listeners through emit with the origin of the write in progress, which is cleared while they run, so
+     * a write a listener makes in reaction is its own
+     * @param emit - emits with the origin it is given
+     */
+    const emitWithOrigin = (emit: (origin: string | undefined) => void): void => {
+        const origin = writeOrigin;
+        writeOrigin = undefined;
+        try {
+            emit(origin);
+        }
+        finally {
+            writeOrigin = origin;
+        }
+    }
 
     const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/;
     /**
@@ -398,10 +441,15 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * target alone and are not passed on.
      * An alias path is itself a path other aliases can lead to, so each alias event is passed on the same way, which
      * reaches listeners below an alias that leads to another alias. Every event is emitted once.
+     * Every event carries the origin of the write in progress.
      * @param path - the resolved path that changed
      */
     const emitChange = (path: string, value: any, oldValue: any, action: string) => {
-        eventManager.emit(path, value, oldValue, action);
+        emitWithOrigin((origin) => emitChangeTo(path, value, oldValue, action, origin));
+    }
+
+    const emitChangeTo = (path: string, value: any, oldValue: any, action: string, origin: string | undefined) => {
+        eventManager.emit(path, value, oldValue, action, origin);
 
         if (links.size === 0) {
             return;
@@ -417,7 +465,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                 if (changed === target && action.endsWith("-child")) {
                     if (!emitted.has(from)) {
                         emitted.add(from);
-                        eventManager.emit(from, value, oldValue, action);
+                        eventManager.emit(from, value, oldValue, action, origin);
                         spread(from);
                     }
                 }
@@ -427,7 +475,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                         //a change above the target hands the alias what it shows: the values at the target's place in the
                         //changed values, not the whole object of the path that changed
                         const rest = changed === target ? [] : target.slice(changed.length + 1).split(".");
-                        eventManager.emitTree(from, pick(value, rest), pick(oldValue, rest), action);
+                        eventManager.emitTree(from, pick(value, rest), pick(oldValue, rest), action, origin);
                         spread(from);
                     }
                 }
@@ -435,7 +483,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
                     const mapped = `${from}${changed.slice(target.length)}`;
                     if (!emitted.has(mapped)) {
                         emitted.add(mapped);
-                        eventManager.emit(mapped, value, oldValue, action);
+                        eventManager.emit(mapped, value, oldValue, action, origin);
                         spread(mapped);
                     }
                 }
@@ -981,7 +1029,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param state
      * @param newState
      */
-    const applyIf = <T = any>(path: string, source: any) => {
+    const applyIf = <T = any>(path: string, source: any, options?: WriteOptions) => {
         ///LOGGING
         report("state-set", "ApplyIf to %s", [path]);
         report("state-set", "ApplyIf stack %s", [getDebugStack()]);
@@ -992,7 +1040,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         ///END LOGGING
 
         const { basePath, propName } = getParentAndPropName(normalizePath(path));
-        return setStateByPath(basePath, propName, source, false, false);
+        return withOrigin(options, () => setStateByPath(basePath, propName, source, false, false));
     }
 
     /**
@@ -1001,13 +1049,13 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param path
      * @param source
      */
-    const apply = <T = any>(path: string, source: any) => {
+    const apply = <T = any>(path: string, source: any, options?: WriteOptions) => {
         ///LOGGING
         report("state-set", "Apply to %s", [path]);
         ///END LOGGING
 
         const { basePath, propName } = getParentAndPropName(normalizePath(path));
-        return setStateByPath(basePath, propName, source, true, false);
+        return withOrigin(options, () => setStateByPath(basePath, propName, source, true, false));
     }
 
     /**
@@ -1015,7 +1063,11 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param path
      * @param source
      */
-    const replace = <T = any>(path: string, source: any) => {
+    const replace = <T = any>(path: string, source: any, options?: WriteOptions) => {
+        return withOrigin(options, () => replaceAt<T>(path, source));
+    }
+
+    const replaceAt = <T = any>(path: string, source: any) => {
         //listeners are keyed by $.-prefixed paths, so normalize before splitting and emitting
         path = normalizePath(path);
         if (isProtected(path)) {
@@ -1149,14 +1201,15 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         const oldValues = aliases.map((alias) => readEventValue(resolvePath(alias)));
         links.set(from, to);
         forgetResolved();
-        eventManager.emitTrees(
+        withOrigin(options, () => emitWithOrigin((origin) => eventManager.emitTrees(
             aliases.map((alias, i) => ({
                 path: alias,
                 value: readEventValue(resolvePath(alias)),
                 oldValue: oldValues[i]
             })),
-            "relink"
-        );
+            "relink",
+            origin
+        )));
 
         return true;
     }
@@ -1217,13 +1270,13 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param value
      * @returns
      */
-    const set = <T = any>(path: string, value: T): boolean => {
+    const set = <T = any>(path: string, value: T, options?: WriteOptions): boolean => {
         ///LOGGING
         report("state-set", "Set explicitly %s", [path]);
         ///END LOGGING
 
         const { basePath, propName } = getParentAndPropName(normalizePath(path));
-        return setStateByPath(basePath, propName, value, true, true);
+        return withOrigin(options, () => setStateByPath(basePath, propName, value, true, true));
     };
 
     const keys = <T = any>(path: string): (string | number | Symbol)[] => {
@@ -1241,14 +1294,14 @@ export const createStore = <R>(initialState?: R): Store<R> => {
      * @param path
      * @returns
      */
-    const deleteProperty = (path: string): boolean => {
+    const deleteProperty = (path: string, options?: WriteOptions): boolean => {
         ///LOGGING
         report("state-set", "Delete explicitly %s", [path]);
         ///END LOGGING
 
         const { basePath, propName } = getParentAndPropName(normalizePath(path));
 
-        return deleteStateByPath(basePath, propName);
+        return withOrigin(options, () => deleteStateByPath(basePath, propName));
     }
 
     return {
