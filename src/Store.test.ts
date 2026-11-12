@@ -55,6 +55,39 @@ describe('Store', () => {
             expect(success).toBe(false);
         });
 
+        it('should tell its listeners of a set with always to the value the path already holds, every time', () => {
+            // Arrange: a press that sets clicked = true, more than once
+            const heard: [unknown, unknown, string, string | undefined][] = [];
+            store.set('$.user.clicked', true);
+            store.on('$.user.clicked', (_path, value, oldValue, action, origin) => heard.push([value, oldValue, action, origin]));
+
+            // Act
+            store.set('$.user.clicked', true, { always: true });
+            store.set('$.user.clicked', true, { always: true, origin: 'press' });
+            store.set('$.user.clicked', true);
+            store.get('$.user').clicked = true;
+
+            // Assert: only the writes that asked are heard
+            expect(heard).toEqual([
+                [true, true, 'update', undefined],
+                [true, true, 'update', 'press']
+            ]);
+        });
+
+        it('should keep the children a set of an object leaves as they were silent', () => {
+            // Arrange
+            const heard: string[] = [];
+            store.on('$.user.name', (path) => heard.push(path));
+            store.on('$.user.age', (path) => heard.push(path));
+
+            // Act: replace and merge the user, its name kept
+            store.set('$.user', { name: 'John Doe', age: 31, address: { city: 'New York', zip: '10001' } });
+            store.apply('$.user', { name: 'John Doe' });
+
+            // Assert
+            expect(heard).toEqual(['$.user.age']);
+        });
+
         it('should replace the contents if a set', () => {
             const user = {
                 name: 'Jim Doe',

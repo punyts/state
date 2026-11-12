@@ -14,6 +14,12 @@ export interface WriteOptions {
      * while it is called is its own and is not tagged
      */
     origin?: string;
+    /**
+     * `set` only: tell the listeners even when the path already holds the value, as an `update` with the value as old
+     * and new. For a write that is an action and not a change of a value, such as a press that sets `clicked` to
+     * `true` every time: each one must reach the listeners (state sync, logic). Without it an equal set does nothing
+     */
+    always?: boolean;
 }
 
 export interface LinkOptions extends WriteOptions {
@@ -607,7 +613,8 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         propName: string, 
         value: any, 
         overwrite: boolean, 
-        remove: boolean
+        remove: boolean,
+        always = false
     ): boolean => {
         basePath = basePath.startsWith("$")
             ? basePath
@@ -659,8 +666,18 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         const currentValueType = getRawType(currentValue);
         const currentIsComposite = ["object", "array"].includes(currentValueType);
 
-        //if the values are equal then nothing to do
+        //if the values are equal then nothing to do, unless the write asks to be heard anyway
         if (rawValue === currentValue) {
+            if (always && overwrite && remove && propName) {
+                emitChange(
+                    fullPath,
+                    rawValueIsComposite
+                        ? createProxy<T>(rawValue, fullPath)
+                        : rawValue,
+                    cloneValue(currentValue),
+                    "update"
+                );
+            }
             return true;
         }
 
@@ -1278,7 +1295,7 @@ export const createStore = <R>(initialState?: R): Store<R> => {
         ///END LOGGING
 
         const { basePath, propName } = getParentAndPropName(normalizePath(path));
-        return withOrigin(options, () => setStateByPath(basePath, propName, value, true, true));
+        return withOrigin(options, () => setStateByPath(basePath, propName, value, true, true, options?.always === true));
     };
 
     const keys = <T = any>(path: string): (string | number | Symbol)[] => {
