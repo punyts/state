@@ -23,15 +23,14 @@
           "test:run": "vitest run",
           "test:watch": "vitest --watch",
           "test:cov": "vitest run --coverage",
-          "build:watch": "tsc -d tsconfig.build.json -w",
+          "build:watch": "tsc -p tsconfig.build.json -w",
           "dev": "npm run build:watch"
      },
      "keywords": [],
      "author": "",
      "license": "MIT",
      "dependencies": {
-          "@punyts/core": "^1.0.0",
-          "test": "^3.3.0"
+          "@punyts/core": "^1.0.0"
      },
      "devDependencies": {
           "typescript": "^5.9.3",

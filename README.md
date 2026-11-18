@@ -1,5 +1,11 @@
-# state
-A state management system
+# @punyts/state
+
+A reactive state store. `createStore(initialState)` wraps a plain object in proxies and addresses it by `$.`-prefixed
+paths: `get`, `set`, `delete`, `apply`, `applyIf` and `replace` read and write it, and `on`/`off` register listeners
+for a path, which may hold the wildcards `$all` and `$every`, called with the path, the new and old value, the action and the write's origin.
+`link` makes one path an alias of another, `resolve` follows the aliases of a path, and `protect` makes a path
+read-only. The package also exports `createEventManager`, `applyToState`, `applyToStateIf` and `replaceState`, and
+depends only on `@punyts/core`.
 
 ## Links
 
@@ -107,6 +113,5 @@ store.set('$.data.total', 13);                          // the listener hears no
 - Every event of the write carries the origin: the per-key events of a merge, the `insert-child`, `update-child` and
   `delete-child` events of the parent, and the events passed on to aliases.
 - A write a listener makes while it is called is its own: it carries no origin unless it passes one.
-- An untagged write calls listeners with four arguments, as before. Assignment through a proxy is untagged.
+- An untagged write calls listeners with four arguments. Assignment through a proxy is untagged.
 
-Links: not carried over from statenet are its hard links and soft links. Only the alias exists.
